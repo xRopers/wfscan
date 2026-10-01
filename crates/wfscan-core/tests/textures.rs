@@ -36,7 +36,7 @@ fn exported(output: TextureOutput) -> Setup {
     let cache = Cache::open(&dir).unwrap();
     let (mut manifest, index_stats) = index(&cache, None, &IndexOptions::default()).unwrap();
     assert_eq!(index_stats.failed, 0);
-    let exporters = Exporters::builtin(&FormatOptions { texture: output });
+    let exporters = Exporters::builtin(&FormatOptions { texture: output, ..Default::default() });
     let stats = export(&cache, &mut manifest, None, &exporters, None, &tmp.path().join("out"), &ExportOptions::default()).unwrap();
     Setup { tmp, manifest, stats }
 }
@@ -156,7 +156,7 @@ fn switching_formats_exports_again() {
     let (mut manifest, _) = index(&cache, None, &IndexOptions::default()).unwrap();
     let out = tmp.path().join("out");
     let mut run = |output: TextureOutput| {
-        let exporters = Exporters::builtin(&FormatOptions { texture: output });
+        let exporters = Exporters::builtin(&FormatOptions { texture: output, ..Default::default() });
         let stats = export(&cache, &mut manifest, None, &exporters, None, &out, &ExportOptions::default()).unwrap();
         (stats.ok, stats.skipped)
     };

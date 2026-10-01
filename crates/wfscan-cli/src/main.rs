@@ -1,14 +1,15 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 use wfscan_core::output::{internal_path_under, write_atomic};
 use wfscan_core::{
-    Cache, Classifier, ExportOptions, Exporters, FileEntry, FormatOptions, IndexOptions, Kind, Manifest, Oodle, OodleDecoder,
-    PackageInfo, Part, Status, TextureOutput, diff, export, index, package_info, report,
+    AudioOutput, Cache, Classifier, ExportOptions, Exporters, FileEntry, FormatOptions, IndexOptions, Kind, Manifest, Oodle, OodleDecoder,
+    PackageInfo, Part, Status, TextureOutput, VorbisTables, diff, export, index, package_info, report,
 };
 
 #[derive(Parser)]
@@ -133,6 +134,14 @@ enum Command {
         /// slice; HDR textures are clamped)
         #[arg(long, default_value_t, value_name = "FORMAT")]
         texture_format: TextureOutput,
+        /// What sounds become: native (exact: the game's data as .ogg, .opus or .wav,
+        /// whichever the sound is) or wav (everything decoded to 16-bit PCM)
+        #[arg(long, default_value_t, value_name = "FORMAT")]
+        audio_format: AudioOutput,
+        /// Also use the Vorbis header sets in this game executable (wfscan has the ones
+        /// the game used in September 2026 built in; a later game may have more)
+        #[arg(long, value_name = "PATH")]
+        game_exe: Option<PathBuf>,
         /// An older manifest, from before a game update: files unchanged since, and
         /// exported then, are skipped
         #[arg(long, value_name = "MANIFEST")]
@@ -205,9 +214,10 @@ fn run(cli: Cli) -> Result<()> {
             cmd_list(&manifest, &filter, cli.json)
         }
         Command::Raw { cache, path, package, dir } => cmd_raw(&open(&cache)?, &path, package.as_deref(), &dir, oodle, cli.json),
-        Command::Export { cache, manifest, dir, package, path, kinds, texture_format, changed_since, dry_run, force } => {
-            let opts = ExportOptions { package, path, kinds, dry_run, force };
-            let exporters = Exporters::builtin(&FormatOptions { texture: texture_format });
+        Command::Export { cache, manifest, dir, package, path, kinds, texture_format, audio_format, game_exe, changed_since, dry_run, force } => {
+            let vorbis = game_exe.as_deref().map(vorbis_tables).transpose()?;
+            let opts = ExportOptions { package, path, kinds, dry_run, force, files: None };
+            let exporters = Exporters::builtin(&FormatOptions { texture: texture_format, audio: audio_format, vorbis });
             let job =
                 ExportJob { manifest_path: &manifest, changed_since: changed_since.as_deref(), out_dir: &dir, opts: &opts, exporters: &exporters };
             cmd_export(&open(&cache)?, &job, oodle, cli.json)
@@ -215,6 +225,18 @@ fn run(cli: Cli) -> Result<()> {
         Command::Diff { old, new, list } => cmd_diff(&old, &new, list, cli.json),
         Command::Report { manifest, errors, unknown } => cmd_report(&manifest, errors, unknown, cli.json),
     }
+}
+
+/// The bundled Vorbis header sets plus any others in a game executable.
+fn vorbis_tables(exe: &Path) -> Result<Arc<VorbisTables>> {
+    let found = VorbisTables::load(exe).with_context(|| exe.display().to_string())?;
+    if found.sets.is_empty() {
+        bail!("{} holds no Vorbis header sets", exe.display());
+    }
+    let tables = VorbisTables::bundled().clone().with(&found);
+    let added = tables.sets.len() - VorbisTables::bundled().sets.len();
+    eprintln!("{}: {} Vorbis header sets, {added} that wfscan doesn't have built in", exe.display(), found.sets.len());
+    Ok(Arc::new(tables))
 }
 
 fn print_json<T: Serialize>(value: &T) -> Result<()> {

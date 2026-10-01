@@ -1,0 +1,141 @@
+{
+  "files": [
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 172,
+          "crc32": 3934204134,
+          "size": 385
+        },
+        "H": {
+          "compressed_size": 344,
+          "crc32": 1592200608,
+          "size": 987
+        }
+      },
+      "path": "/Lotus/Characters/Hero/Hero_skel.fbx",
+      "stale": false,
+      "type": 281
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 284,
+          "crc32": 3860308815,
+          "size": 800
+        },
+        "H": {
+          "compressed_size": 160,
+          "crc32": 3403495590,
+          "size": 258
+        }
+      },
+      "path": "/Lotus/Fx/Web/WebPatchMesh",
+      "stale": false,
+      "type": 299
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 85,
+          "crc32": 3233375365,
+          "size": 142
+        },
+        "H": {
+          "compressed_size": 278,
+          "crc32": 789739415,
+          "size": 775
+        }
+      },
+      "path": "/Lotus/Levels/Room/0_c.fbx",
+      "stale": false,
+      "type": 109
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 290,
+          "crc32": 2710904688,
+          "size": 800
+        },
+        "H": {
+          "compressed_size": 166,
+          "crc32": 2588328577,
+          "size": 263
+        }
+      },
+      "path": "/Lotus/Levels/Room/Far_hlod.fbx",
+      "stale": false,
+      "type": 108
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 48,
+          "crc32": 897008499,
+          "size": 61
+        },
+        "F": {
+          "compressed_size": 54,
+          "crc32": 731552497,
+          "size": 54
+        },
+        "H": {
+          "compressed_size": 295,
+          "crc32": 2191151639,
+          "size": 878
+        }
+      },
+      "path": "/Lotus/Objects/Crate/Crate.fbx",
+      "stale": false,
+      "type": 102
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 48,
+          "crc32": 897008499,
+          "size": 61
+        },
+        "F": {
+          "compressed_size": 51,
+          "crc32": 2201501181,
+          "size": 51
+        },
+        "H": {
+          "compressed_size": 301,
+          "crc32": 3695562653,
+          "size": 884
+        }
+      },
+      "path": "/Lotus/Objects/Crate/CrateBroken.fbx",
+      "stale": false,
+      "type": 102
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 15,
+          "crc32": 178177846,
+          "size": 7
+        },
+        "H": {
+          "compressed_size": 234,
+          "crc32": 2531408004,
+          "size": 616
+        }
+      },
+      "path": "/Lotus/Objects/Crate/CrateCollision.fbx",
+      "stale": false,
+      "type": 102
+    }
+  ],
+  "name": "models"
+}

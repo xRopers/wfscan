@@ -144,6 +144,8 @@ pub struct ExportOptions {
     pub path: Option<String>,
     /// Only these kinds; empty means every file.
     pub kinds: Vec<Kind>,
+    /// Only these entries of the manifest, by position in its file list.
+    pub files: Option<std::collections::HashSet<usize>>,
     /// Run the exporters and record the results, but write no files.
     pub dry_run: bool,
     /// Export again even where an earlier export still stands.
@@ -274,6 +276,27 @@ impl Run<'_> {
     }
 }
 
+/// Read one file's H part and hand `use_it` what an exporter would get, without going
+/// through a manifest: for previews and tools that look at a single file.
+pub fn with_input<T>(
+    cache: &Cache,
+    package: &str,
+    path: &str,
+    oodle: Option<&dyn OodleDecoder>,
+    use_it: impl FnOnce(&ExportInput) -> T,
+) -> Result<T> {
+    let source = cache.package(package).ok_or_else(|| Error::NotFound(format!("no package named {package}")))?;
+    let mut parts = [None; 3];
+    for part in Part::ALL {
+        parts[part as usize] = source.part(part).and_then(|f| f.find(path));
+    }
+    let h_entry = parts[Part::H as usize].ok_or_else(|| Error::NotFound(format!("{package} has no file at {path}")))?;
+    let (h, _) = source.part(Part::H).expect("a found entry's part exists").read(h_entry, oodle)?;
+    let header = header::parse(&h).map_err(|e| Error::NotFound(format!("{path} has no common header ({e})")))?;
+    let input = ExportInput { game: cache.game, category: source.category, package, path, header: &header, h: &h, source, parts, oodle };
+    Ok(use_it(&input))
+}
+
 /// Check that `manifest` still describes `cache`: the same game, and for every package
 /// the same file counts and sizes.
 pub fn check_manifest(cache: &Cache, manifest: &Manifest) -> Result<()> {
@@ -320,6 +343,7 @@ pub fn export(
         .filter(|(_, f)| !f.stale)
         .filter(|(_, f)| opts.package.as_ref().is_none_or(|p| *p == f.package))
         .filter(|(_, f)| opts.path.as_ref().is_none_or(|p| f.path.starts_with(p.as_str())))
+        .filter(|(i, _)| opts.files.as_ref().is_none_or(|only| only.contains(i)))
         .map(|(i, f)| (i, classifier.kind(f)))
         .filter(|(_, kind)| opts.kinds.is_empty() || kind.is_some_and(|k| opts.kinds.contains(&k)))
         .collect();

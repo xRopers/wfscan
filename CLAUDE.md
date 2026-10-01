@@ -16,8 +16,9 @@ The original repo and LotusLib have **no license file**, so their code cannot be
 - Siblings are git dependencies (github.com/xRopers/...), pinned to a tag, never path dependencies.
 - Oodle: zscan-core's `oodle` plugin (user's own `oo2core_*` loaded with `libloading`; never bundled), behind wfscan's `oodle` cargo feature, which is on by default because almost every block is Oodle. Warframe does not ship an oo2core DLL, so later evaluate a pure-Rust Kraken decoder (decode is all an exporter needs) to remove the setup step. Check its license and test it against oo2core on real blocks before relying on it.
 - Textures: wfscan writes DDS itself (texscan-core has a DDS reader, no writer). `texscan-core` (pinned to a commit: it has no tags) decodes BCn and encodes PNG, behind wfscan's `png` cargo feature, on by default. texscan-core includes `basisu` (Apache-2.0 only), so binaries with `png` are effectively GPL-3, as texscan's own are.
-- Audio (stage 5): `audscan-core` where the payload is a format it already knows.
-- Models: glTF 2.0 written directly with `serde_json` (or `gltf-json`), `glam` for math.
+- Audio: Vorbis and Opus sounds are written as Ogg without re-encoding (the writer is wfscan's own). Decoding to PCM, for WAV export and the GUI's player, uses `lewton` (Vorbis, MIT/Apache) and `ropus` (Opus, BSD-3; `opus-decoder` was tried first and was a hundred times slower), behind wfscan's `audio` cargo feature, on by default. The Vorbis header sets the game's sounds need are bundled (`crates/wfscan-core/data/vorbis_headers.bin`): generated with libvorbis 1.3.7 by `tools/vorbis-headers`, under libvorbis's BSD license, not taken from the game. `audscan-core` had nothing these formats need.
+- Models: binary glTF 2.0 written directly with `serde_json`; no math crate needed so far.
+- GUI: `eframe`/`egui`/`egui_extras` 0.36, `rfd`; `egui_kittest` for tests.
 
 ## Layout
 ```
@@ -33,11 +34,17 @@ wfscan/
       src/diff.rs       # what changed between two manifests
       src/report.rs     # coverage per type, failures grouped
       src/formats/      # one folder per asset kind; mod.rs has FormatOptions and Exporters::builtin
-        texture/        # raw.rs (header), model.rs (Texture: format, size, mips, shape, DDS-order data), dds.rs (writer), mod.rs (exporter, PNG)
-                        # (stage 4+) model/, material/, audio/, level/, landscape/, shader/
+        reader.rs       # byte cursor shared by the format readers
+        texture/        # raw.rs (header), model.rs (Texture: format, size, mips, shape, DDS-order data), dds.rs (writer), mod.rs (exporter, PNG, decode_rgba)
+        model/          # raw.rs (headers and vertex layouts per variant), model.rs (Model: units, meshes, skeleton), glb.rs (writer), render.rs (software preview), mod.rs (exporter)
+        audio/          # raw.rs (header), model.rs (Audio: codec, packets), vorbis.rs (the bundled header sets; reading them from a game exe), decode.rs (to PCM), ogg.rs + wav.rs (writers), mod.rs (exporter)
+      data/             # vorbis_headers.bin + its README and libvorbis's license
+                        # (later) material/, level/, landscape/, shader/
     wfscan-cli/         # clap CLI, binary `wfscan`
     wfscan-fixtures/    # deterministic synthetic caches, written without wfscan-core; `gen-fixtures` writes tests/fixtures/
-    wfscan-gui/         # (stage 8) egui desktop app, depends on wfscan-core only
+    wfscan-gui/         # egui desktop app, binary `wfscan-gui` (needs Rust 1.95), depends on wfscan-core only
+                        # session.rs (state, slow operations), jobs.rs (one worker job at a time), preview.rs (selected file, own thread), tree.rs (files by folder), player.rs (waveOut playback, from audscan-gui), app.rs + widgets.rs (drawing), settings.rs
+  tools/vorbis-headers/ # own workspace: builds libvorbis 1.3.7 (vorbis-sys) and writes data/vorbis_headers.bin; `--check GAME.exe` compares
   tests/fixtures/       # generated <name>/Cache.Windows + expected.json, checked in
 ```
 The core must never depend on the CLI or GUI. The GUI calls the library directly.
@@ -50,7 +57,7 @@ wfscan info    <Cache.Windows>                             # game, packages, cou
 wfscan index   <Cache.Windows> [-o manifest.json] [--hash] [--full-headers] [--no-stale]
 wfscan list    -m manifest.json [--package P] [--path PREFIX] [--type N] [--kind K] [--status S] [--failed] [--stale]
 wfscan raw     <Cache.Windows> --path FILE|FOLDER/ [--package P] -d out/   # decompressed H/B/F bytes, for format work
-wfscan export  <Cache.Windows> -m manifest.json -d out/ [--package P] [--path PREFIX] [--kinds K,K] [--texture-format dds|png] [--changed-since old.json] [--dry-run] [--force]
+wfscan export  <Cache.Windows> -m manifest.json -d out/ [--package P] [--path PREFIX] [--kinds K,K] [--texture-format dds|png] [--audio-format native|wav] [--game-exe PATH] [--changed-since old.json] [--dry-run] [--force]
 wfscan diff    old.json new.json [--list]                  # added / removed / changed, totals per type
 wfscan report  -m manifest.json [--errors N] [--unknown]   # coverage per type: files, kind, read and export results; failures grouped
 ```
@@ -95,6 +102,42 @@ One JSON line per (package, internal path), sorted, stale copies after the live 
 - Bundling Oodle or any game data.
 
 ## Status
+- GUI additions (October 2026, at the user's request): a tree view, hex/text tabs and a sound player.
+  - **List / Tree toggle** in the toolbar. The tree (`tree.rs`) is packages, then folders, folders before files, built from the files the filter lets through; only open folders' lines exist, so all 446,923 files are no slower than the list. Folders start closed; with any filter set they start open (a search is no use folded away). Selecting a file opens the way to it. `⊞` / `⊟` open and close everything. Sorting applies to the list only.
+  - **Sort by** dropdown next to the filter (package then path, path, file name, kind, type, size, export status) with an ascending/descending button; the column headings still sort too. Path and name ignore case.
+  - **Preview / Hex / Text tabs** in the details pane, as in zscan-gui. Hex and Text show one part of the file as it is in the cache once decompressed (H, B or F, chosen next to the tabs; the first 4 MiB). A kind with no viewer shows its bytes under Preview. The tab chosen stays as you move between files.
+  - **Sound player**: waveform, Play/Stop, click the waveform to play from there, Space plays and stops; playback stops when another file is selected. Playback is Windows-only (waveOut, `player.rs` copied from audscan-gui). Not heard by ear from here: the device test is `cargo test -p wfscan-gui -- --ignored`.
+  - Checked by eye on the real cache (tree, a Vorbis and an Opus sound, hex tab, filtered tree) with the temporary kittest screenshots described below.
+- Stage 5, audio half, done: sounds (`formats/audio`) export with `wfscan export ... --kinds audio [--audio-format native|wav] [--game-exe PATH]`, and from the GUI (Export menu, "Sounds as").
+  - Result on the real cache (dry runs): all 88,780 sounds ok in both formats, 0 failed, 0 unsupported. Native: 9.5 GiB in 4.7 s. WAV: 84 GiB.
+  - Native writes each sound in its own format with nothing re-encoded: Vorbis as `.ogg` (the bundled header packets, then the sound's packets, page positions from the game's packet table), Opus as `.opus` (an `OpusHead`/`OpusTags` written here, pre-skip 312 or what the packets have to spare), PCM as `.wav`. WAV decodes everything to 16-bit PCM.
+  - Checked (`tests/audio.rs` `real_sounds_export_and_read_back`): 32 exported `.ogg` files read with lewton's own Ogg reader (which checks page checksums) and 136 `.opus` files (48 and 24 kHz) read page by page decode to exactly the samples the sound decodes to directly, and end at the sound's length. **Not checked with an outside player** (no ffmpeg or similar on this machine): play a few exported files in VLC or foobar2000 before trusting a full export.
+  - **No game executable is needed.** The game keeps the Vorbis header packets in `Warframe.x64.exe`, but all 12 sets there are byte for byte what libvorbis 1.3.7 writes for `vorbis_encode_init_vbr` at qualities -0.1 and 0.45 (32 kHz) and 0.725, 0.78, 0.835, 0.89 (44.1 kHz), mono and stereo. wfscan bundles the libvorbis-generated sets (see `data/README.md`). `--game-exe PATH` adds whatever sets an executable has that aren't bundled, for after a game update; `real_sounds_decode` fails if the game next to the cache has a set that isn't bundled.
+  - An `.ogg` exported with the wrong one of the two 44.1 kHz setups (see the guess below) is a valid file full of noise. The exporter picks the set by the same trial decode as the player; without the `audio` feature it takes the later set.
+  - Still owed by stage 5: shaders.
+  - Result on the real cache with `WFSCAN_FULL=1 cargo test --release -p wfscan-core --test audio real_sounds_decode` (190 s): all 88,780 sounds of type 139 (Misc and its language packages) decode to exactly the sample count their header states: 46,723 Vorbis, 41,982 Opus, 75 PCM, 0 failures. 107 clip on more than 2% of their samples (99 Vorbis, 8 Opus): loud sounds, or for Vorbis possibly the wrong header set.
+  - **Codec 8 is Vorbis**, which the original doesn't read at all (it knows 0 PCM, 5 ADPCM, 7 Opus): raw packets with no container and no header packets, behind a table of packet offsets and sample positions in B. ADPCM doesn't occur in the cache and has no reader.
+  - The Vorbis header packets aren't in the cache (searched: no setup header anywhere in 124 GiB) but in the executable; `VorbisTables::scan` reads them from one, `VorbisTables::bundled` is the built-in copy.
+  - **Which set a 44.1 kHz sound uses is a guess.** There are two setups per channel count and no header field found that picks one (most sounds use the second, a few hundred the first). `decode` tries both on the first 400 packets and keeps the one that clips least, then the quieter. On quiet sounds that can pick wrong, and the result is noise. The exporter uses the same trial; a real rule would be better.
+  - Data rule (from the original, confirmed): the audio is the last `size` bytes of B followed by F; anything before it in B is other data. Opus: fixed-size packets of 20 ms, and 312 samples (at 48 kHz) or fewer of lead-in to drop (51 of 229 sampled sounds had only 256 to spare). Some dialogue is 24 kHz Opus: the header's counts are at that rate, Ogg Opus positions always at 48 kHz.
+  - Fixtures: `fx::sounds()` (PCM stored three ways, a Vorbis sound of noise packets that reads but can't decode, ADPCM, a truncated one). There is no fixture Vorbis or Opus that decodes: only the real-cache test covers the decoders.
+- GUI (`crates/wfscan-gui`, egui/eframe 0.36, file dialogs via `rfd`), built early at the user's request, ahead of stages 5-7: `cargo run -p wfscan-gui --release -- [--oodle-dll PATH] [Cache.Windows]`.
+  - What it does: open a cache folder (indexes it, 1.6 s on the real cache); a virtualized table of every file (package, kind, type, size, export status, path), sortable, filtered by path text, kind, status and "known kinds only"; a details pane with the file's parts, read and export results, its attribute text and a preview: textures decoded (largest mip up to 1024), models drawn by the core's software renderer (drag to turn, scroll to zoom), anything else as hex (see the additions above); export of the selected file or of everything shown, textures as DDS or PNG; Tools > Oodle library (remembered in `wfscan/gui.json`, reopens a cache that was opened without it), Coverage (the report) and Log.
+  - Layers as in zscan-gui: `session.rs` has no drawing code; `jobs.rs` runs one job at a time and applies its result on the UI thread; `preview.rs` loads the selected file on its own thread and drops stale results. The table's row list is recomputed only when the filter, sort or session generation changes (it filters 446,777 files).
+  - An export clones the manifest into the job and swaps the result in when it finishes.
+  - Tests: `tests/workflow.rs` drives the session through jobs; `tests/ui.rs` clicks through the real window with `egui_kittest` on a cache made of the texture and model fixtures. To look at the window, temporarily enable kittest's `wgpu` + `snapshot` features and save `harness.render()` to PNG (done once on the real cache: table, model and texture previews and the coverage window all drew correctly). Don't commit that.
+  - Not done: progress bars and cancelling (jobs only show a spinner and elapsed time), saving or loading a manifest, `diff` between manifests, choosing which cube face, layer or slice to show, textures on models, exporting a whole folder from the tree. The GUI's own MSRV (1.95) is only checked in CI: that toolchain isn't installed here.
+  - With the GUI in the workspace, `--no-default-features` no longer turns the core's features off (the GUI always enables them), so the featureless build and tests add `--exclude wfscan-gui`.
+- Stage 4 done, in part: models (`formats/model`) as binary glTF, `wfscan export ... --kinds model`.
+  - Read: Warframe types 102 (static), 109 (level) and 281 (rigged), and the `_dcm` / `_hlod` forms of 102 and 105 (none of those two forms occur in the current cache, so they are untested on real data). Result on the real cache, 57,698 model files in 12.8 s, 4.9 GiB of `.glb`: 50,753 ok, 55 failed, 6,890 unsupported (2,323 collision-only files with nothing to draw; 4,567 of types with no reader: 166 terrain 1,704, 108 1,434, plain 105 1,222, 299 207). Soulframe models: no reader.
+  - The 55 failures are layout variants not understood yet: 46 rigged (extra data in B, or indices that don't fit) and 9 static (8 more bytes per B vertex).
+  - Added to what the original describes, from the cache: static models with a morph count carry `morph count x 8` bytes after their indices (595 models); B counts of zero mean everything is in B (also for static models); weighted bone names missing from the bone tree (213 models, mostly an empty name) get a bone of their own at the root so joint numbers still line up.
+  - Measured: bone rotations are stored x, y, z, w. The skeleton is mirrored in X (position x negated, rotation y and z negated, first row of each inverse bind matrix negated) and the vertices are left alone, so skinning mirrors them; static models have Z negated instead. Both follow the original. Check (`tests/models.rs`): every one of 2,346 real joints' world transform times its inverse bind matrix is that mirror, median error 0.
+  - **Normals and tangents are not exported.** The four normal bytes don't decode to unit vectors or line up with the triangles under any reading tried (bytes as -1..1, 10-bit fields, a tangent-frame quaternion); the original doesn't decode them either. Viewers compute their own. Winding is unverified for the same reason; materials are double-sided.
+  - Materials are names only: each mesh's material path is in the glTF material's `extras.path` (from the header for level models, else from the `Materials={...}` attribute text; relative names are next to the model). No textures are linked: that needs the material reader and exporters that can read other files. Only LOD 0 of each mesh is exported. Ambient occlusion goes out as `_OCCLUSION`.
+  - `formats/model/render.rs` is a small software renderer (flat shading, z-buffer), used by the GUI's preview and to check models by eye: Excalibur's body and helmet drew upright and in proportion.
+  - `export::with_input` reads one file the way the export driver would, without a manifest: used by previews and the real-cache tests.
+  - Fixtures: `fx::models()` (a quad as a static, a level and a rigged model, plus collision-only, unreadable types and a truncated one); model readers were first checked against all 57,698 real models with a throwaway survey tool.
 - Stage 3 done: textures (`formats/texture`), the first real exporter. `wfscan export ... --kinds texture [--texture-format dds|png]`.
   - Result on the real cache: all 129,645 files of the `Texture` and `LightMap` packages get a status in a 16.5 s dry run: 128,668 ok, 977 unsupported (pixel formats 31, 32, 33, which the original doesn't know either), 0 failed. As DDS they would be 97.7 GiB. A real folder (321 Excalibur textures): DDS 0.2 s, PNG 3.6 s.
   - Layout, worked out from the cache and written up in `raw.rs` and `model.rs`: the header's first two bytes are the mip counts in B and F; B holds the smallest mips and F the largest (icons keep everything in F); within a part mips run smallest first, and each mip holds all elements (faces, layers, slices). The stored size is the authored size scaled so its larger side equals a third size field: many textures ship at half or quarter size. The element count isn't stored: it is data size / one element's chain. 6 in a cube type (Texture 177, LightMap 177/183) is a cube, several with one mip is a volume, otherwise an array.
@@ -129,7 +172,8 @@ One JSON line per (package, internal path), sorted, stale copies after the live 
 - `index` without `--hash` reads only H parts, so it can't see a damaged B or F part; `--hash` is the full check.
 - Oodle goes through zscan-core's codec, which copies each block in and out. Fast enough (5.5 GiB/s over the whole cache); a direct FFI call would avoid the copies if it ever matters.
 - Fixtures stand in for Oodle with "flip" blocks (`0x8C` + inverted bytes) and a matching decoder passed to the reader. CLI tests use `Fixture::without_oodle()` and clear the Oodle environment variables.
-- No README yet, nothing committed (the repo is `git init`ed only).
+- No README yet. Stages 1-3 are committed (`01c5d96`); stage 4, the GUI and the sound reader are in the working tree.
+- The game updated between the first index and October 2026 (446,777 files with 1 stale then; 446,923 with 1,269 stale now). The old manifests are in the session scratchpad only; `wfscan diff` between them would answer the timestamp question in the stage 2 notes and hasn't been run.
 
 ## Open decisions
 - Oodle: runtime DLL only, or a pure-Rust Kraken decoder as the default with the DLL as fallback.

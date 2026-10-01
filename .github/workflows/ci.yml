@@ -1,8 +1,8 @@
-# Build, test and lint with and without the Oodle feature.
+# Build, test and lint with and without the optional features.
 #
-# Runs on Windows, where wfscan is developed. No Oodle library and no game cache are
-# available here, so the real-cache test skips; run it locally with WFSCAN_CACHE_DIR and
-# WFSCAN_OODLE_DLL set.
+# Runs on Windows, where wfscan is developed (the GUI's file dialogs need GTK on Linux).
+# No Oodle library and no game cache are available here, so the real-cache tests skip;
+# run them locally with WFSCAN_CACHE_DIR and WFSCAN_OODLE_DLL set.
 name: CI
 
 on:
@@ -25,7 +25,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        flags: ["", "--no-default-features"]
+        # The GUI always turns the core's features on, so the build without them leaves it out.
+        flags: ["", "--no-default-features --exclude wfscan-gui"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -41,15 +42,26 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets ${{ matrix.flags }}
 
+  # The core library and CLI keep the workspace MSRV; the GUI needs what egui needs.
   msrv:
-    name: MSRV (1.89)
+    name: MSRV (${{ matrix.toolchain }}, ${{ matrix.crates }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: "1.89"
+            crates: core + cli
+            packages: -p wfscan-core -p wfscan-cli -p wfscan-fixtures
+          - toolchain: "1.95"
+            crates: gui
+            packages: -p wfscan-gui
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.89"
+          toolchain: ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: msrv
-      - run: cargo check --workspace --all-targets
+          key: msrv-${{ matrix.toolchain }}
+      - run: cargo check ${{ matrix.packages }} --all-targets

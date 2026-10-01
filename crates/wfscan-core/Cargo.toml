@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["oodle", "png"]
+default = ["oodle", "png", "audio"]
 # Oodle blocks, decoded by the user's own oo2core library loaded at run time (through
 # zscan-core). Never bundled. Almost every block in a current cache is Oodle, so a build
 # without this can only read TOCs, stored entries and LZF blocks.
@@ -15,6 +15,10 @@ oodle = ["dep:zscan-core"]
 # PNG output for textures, decoded by texscan-core. Without it textures export as DDS only.
 # texscan-core includes basisu (Apache-2.0 only), which makes binaries effectively GPL-3.
 png = ["dep:texscan-core"]
+# Decoding sounds to PCM, for WAV export and the GUI's player: Vorbis with lewton (MIT or
+# Apache-2.0), Opus with ropus (BSD-3-Clause), both pure Rust. Without it sounds still
+# export in their own formats, but Vorbis header sets are picked without a trial decode.
+audio = ["dep:lewton", "dep:ropus"]
 
 [dependencies]
 crc32fast.workspace = true
@@ -23,9 +27,14 @@ rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+lewton = { version = "0.10", optional = true }
+ropus = { version = "0.12", optional = true }
 texscan-core = { workspace = true, optional = true }
 zscan-core = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The real-cache sound test reads exported files back with these.
+lewton = "0.10"
+ropus = "0.12"
 tempfile.workspace = true
 wfscan-fixtures.workspace = true

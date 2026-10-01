@@ -1,0 +1,123 @@
+{
+  "files": [
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 13,
+          "crc32": 403819114,
+          "size": 12
+        },
+        "F": {
+          "compressed_size": 1398,
+          "crc32": 2307815127,
+          "size": 4000
+        },
+        "H": {
+          "compressed_size": 157,
+          "crc32": 3699205624,
+          "size": 188
+        }
+      },
+      "path": "/Lotus/Music/Streamed.wav",
+      "stale": false,
+      "type": 139
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 131,
+          "crc32": 4225477605,
+          "size": 122
+        },
+        "H": {
+          "compressed_size": 155,
+          "crc32": 947792705,
+          "size": 191
+        }
+      },
+      "path": "/Lotus/Sounds/Compressed.wav",
+      "stale": false,
+      "type": 139
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 74,
+          "crc32": 444393218,
+          "size": 64
+        },
+        "H": {
+          "compressed_size": 155,
+          "crc32": 1074475680,
+          "size": 184
+        }
+      },
+      "path": "/Lotus/Sounds/Old.wav",
+      "stale": false,
+      "type": 139
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 448,
+          "crc32": 4277421235,
+          "size": 700
+        },
+        "H": {
+          "compressed_size": 155,
+          "crc32": 1604333419,
+          "size": 186
+        }
+      },
+      "path": "/Lotus/Sounds/Short.wav",
+      "stale": false,
+      "type": 139
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 864,
+          "crc32": 242524856,
+          "size": 1024
+        },
+        "F": {
+          "compressed_size": 2606,
+          "crc32": 2486260678,
+          "size": 6976
+        },
+        "H": {
+          "compressed_size": 160,
+          "crc32": 3130279332,
+          "size": 192
+        }
+      },
+      "path": "/Lotus/Sounds/SplitStereo.wav",
+      "stale": false,
+      "type": 139
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 2671,
+          "crc32": 1830044905,
+          "size": 8005
+        },
+        "H": {
+          "compressed_size": 153,
+          "crc32": 2068793005,
+          "size": 185
+        }
+      },
+      "path": "/Lotus/Sounds/Tone.wav",
+      "stale": false,
+      "type": 139
+    }
+  ],
+  "name": "sounds"
+}

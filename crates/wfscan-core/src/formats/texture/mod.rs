@@ -133,6 +133,40 @@ fn pngs(texture: &Texture, dds: &[u8], path: &str) -> Result<Vec<Output>, Export
     Ok(outputs)
 }
 
+/// One decoded image of a texture: 8-bit RGBA, rows top to bottom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rgba {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
+}
+
+/// Decode one element (face, layer or slice) of `texture` for display: the largest mip
+/// no wider or taller than `max_size`, or the smallest there is.
+#[cfg(feature = "png")]
+pub fn decode_rgba(texture: &Texture, element: u32, max_size: u32) -> Result<Rgba, String> {
+    let file = dds::write(texture);
+    let info = texscan_core::formats::dds::parse(&file).map_err(|e| format!("the DDS written doesn't parse: {e:?}"))?;
+    let fits = |mip: &u32| texture.mip_size(*mip).0.max(texture.mip_size(*mip).1) <= max_size;
+    let mip = (0..texture.mips).find(fits).unwrap_or(texture.mips - 1);
+    let image = match texture.shape {
+        Shape::Volume(_) => texscan_core::Subresource { layer: 0, mip, slice: element },
+        _ => texscan_core::Subresource { layer: element, mip, slice: 0 },
+    };
+    let mut decoded = texscan_core::decode(&file, &info, image).map_err(|e| e.to_string())?;
+    if texture.format == PixelFormat::A8 {
+        for pixel in decoded.rgba.as_chunks_mut::<4>().0 {
+            *pixel = [pixel[3], pixel[3], pixel[3], 255];
+        }
+    }
+    Ok(Rgba { width: decoded.width, height: decoded.height, pixels: decoded.rgba })
+}
+
+#[cfg(not(feature = "png"))]
+pub fn decode_rgba(_texture: &Texture, _element: u32, _max_size: u32) -> Result<Rgba, String> {
+    Err("this wfscan was built without texture decoding (rebuild with the `png` feature)".into())
+}
+
 #[cfg(not(feature = "png"))]
 fn pngs(_texture: &Texture, _dds: &[u8], _path: &str) -> Result<Vec<Output>, ExportError> {
     Err(ExportError::unsupported("this wfscan was built without PNG support (rebuild with the `png` feature)"))

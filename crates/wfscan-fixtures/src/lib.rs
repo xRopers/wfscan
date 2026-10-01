@@ -502,9 +502,16 @@ pub fn texture(format: u8, authored: (u16, u16), stored: u16, b_mips: u8, f_mips
     FxTexture { header, b: part(u32::from(f_mips)..mips), f: part(0..u32::from(f_mips)) }
 }
 
+/// A part compressed with LZF if that changes its size (an entry whose two sizes are
+/// equal reads as stored), stored otherwise.
+fn packed(data: Vec<u8>) -> FxPart {
+    let pack = if with_header(&lzf_compress(&data), data.len()).len() == data.len() { Pack::Stored } else { Pack::Lzf };
+    FxPart { data, pack }
+}
+
 /// A texture file: header in H (stored), mips in B and F (LZF) where there are any.
 pub fn texture_file(path: &str, type_id: u32, texture: FxTexture) -> FxFile {
-    let data = |bytes: Vec<u8>| (!bytes.is_empty()).then_some(FxPart { pack: if bytes.len() < 32 { Pack::Stored } else { Pack::Lzf }, data: bytes });
+    let data = |bytes: Vec<u8>| (!bytes.is_empty()).then(|| packed(bytes));
     FxFile {
         path: path.into(),
         stale: false,
@@ -567,9 +574,353 @@ pub fn textures() -> Fixture {
     }
 }
 
+/// The geometry every fixture model has: a quad of four vertices in two meshes of one
+/// triangle each. Positions are fractions of [`MODEL_SCALE`].
+pub const MODEL_POSITIONS: [[f32; 3]; 4] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.5], [0.0, 1.0, -0.5]];
+pub const MODEL_SCALE: [f32; 3] = [2.0, 3.0, 4.0];
+pub const MODEL_UVS: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+pub const MODEL_OCCLUSION: [u8; 4] = [255, 200, 100, 0];
+pub const MODEL_INDICES: [u16; 6] = [0, 1, 2, 0, 2, 3];
+pub const MODEL_MESHES: [&str; 2] = ["Front", "Back"];
+/// The rigged fixture's bones (name, parent) and the bones its vertices are weighted to.
+pub const MODEL_BONES: [(&str, u16); 3] = [("Root", 0), ("Spine", 0), ("Arm", 1)];
+pub const MODEL_WEIGHTED: [&str; 2] = ["Arm", "Root"];
+
+fn str32(out: &mut Vec<u8>, text: &str) {
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(text.as_bytes());
+}
+
+fn zeros(out: &mut Vec<u8>, count: usize) {
+    out.resize(out.len() + count, 0);
+}
+
+fn u32s(out: &mut Vec<u8>, values: &[u32]) {
+    out.extend(values.iter().flat_map(|v| v.to_le_bytes()));
+}
+
+fn f32s(out: &mut Vec<u8>, values: &[f32]) {
+    out.extend(values.iter().flat_map(|v| v.to_le_bytes()));
+}
+
+/// The two mesh infos: each a triangle of the quad.
+fn model_mesh_infos(out: &mut Vec<u8>) {
+    u32s(out, &[MODEL_MESHES.len() as u32]);
+    for (i, name) in MODEL_MESHES.iter().enumerate() {
+        f32s(out, &[0.0; 8]);
+        str32(out, name);
+        u32s(out, &[i as u32 * 3, 0, 0, 0, 0]);
+        u32s(out, &[3, 0, 0, 0, 0]);
+        zeros(out, 0x20);
+        str32(out, "tag");
+        zeros(out, 0x10);
+    }
+}
+
+/// The physics struct, and the empty lists every header ends with.
+fn model_physics(out: &mut Vec<u8>) {
+    u32s(out, &[0, 0]);
+    str32(out, "/Lotus/Physics/Default");
+}
+
+fn model_scale(out: &mut Vec<u8>) {
+    f32s(out, &[MODEL_SCALE[0], -MODEL_SCALE[1], 0.5, 0.0]);
+    f32s(out, &[-1.0, 1.0, MODEL_SCALE[2], 0.0]);
+}
+
+/// One vertex: `layout` 0 packed, 1 level (float positions), 2 rigged.
+fn model_vertex(out: &mut Vec<u8>, index: usize, layout: u8) {
+    let half = |value: f32| -> [u8; 2] {
+        match value {
+            0.0 => 0x0000u16,
+            1.0 => 0x3c00,
+            _ => panic!("fixture UVs are 0 or 1"),
+        }
+        .to_le_bytes()
+    };
+    let p = MODEL_POSITIONS[index];
+    if layout == 1 {
+        f32s(out, &[p[0] * MODEL_SCALE[0], p[1] * MODEL_SCALE[1], p[2] * MODEL_SCALE[2], 0.0]);
+    } else {
+        for value in [p[0], p[1], p[2], 0.0] {
+            out.extend_from_slice(&((value * 32767.0) as i16).to_le_bytes());
+        }
+    }
+    out.extend_from_slice(&[10, 20, 30, 40, 1, 2, 3, MODEL_OCCLUSION[index]]);
+    for value in MODEL_UVS[index].into_iter().chain([0.0, 0.0]) {
+        out.extend_from_slice(&half(value));
+    }
+    if layout == 2 {
+        // Local bones 0 and 1; vertex 0 is all bone 0, the rest half and half.
+        out.extend_from_slice(&[0, 1, 0, 0]);
+        let weights: u32 = if index == 0 { 1023 } else { 512 | 511 << 10 };
+        out.extend_from_slice(&weights.to_le_bytes());
+    }
+}
+
+/// Vertices `range` then indices `range`, as one part's tail.
+fn model_data(layout: u8, vertices: std::ops::Range<usize>, indices: std::ops::Range<usize>) -> Vec<u8> {
+    let mut out = Vec::new();
+    for index in vertices {
+        model_vertex(&mut out, index, layout);
+    }
+    out.extend(MODEL_INDICES[indices].iter().flat_map(|i| i.to_le_bytes()));
+    out
+}
+
+/// A model's three parts.
+#[derive(Debug, Clone)]
+pub struct FxModel {
+    pub header: Vec<u8>,
+    pub b: Vec<u8>,
+    pub f: Vec<u8>,
+}
+
+/// A type 102 static model: the quad, with two vertices and three indices in B and the
+/// rest in F. `meshes` false makes it a collision-only file with PhysX data and nothing
+/// to draw.
+pub fn model_static(meshes: bool) -> FxModel {
+    let mut h = Vec::new();
+    zeros(&mut h, 0x30);
+    model_physics(&mut h);
+    zeros(&mut h, 0x28);
+    model_scale(&mut h);
+    u32s(&mut h, if meshes { &[4, 6, 0, 0] } else { &[0, 0, 0, 0] });
+    zeros(&mut h, 0x22);
+    u32s(&mut h, if meshes { &[2, 3] } else { &[0, 0] });
+    zeros(&mut h, 0x3d);
+    if meshes {
+        model_mesh_infos(&mut h);
+    } else {
+        u32s(&mut h, &[0]);
+    }
+    u32s(&mut h, &[2]);
+    zeros(&mut h, 4); // two u16s
+    model_physics(&mut h);
+    // One PhysX mesh of type 0 with 5 bytes of data at the start of B.
+    u32s(&mut h, &[1, 0]);
+    zeros(&mut h, 0x50 + 32 + 4);
+    u32s(&mut h, &[5]);
+    zeros(&mut h, 8);
+    u32s(&mut h, &[1]);
+    str32(&mut h, "a warning from the build");
+
+    let mut b = vec![0xaa; 5];
+    zeros(&mut b, 2);
+    if !meshes {
+        return FxModel { header: h, b, f: Vec::new() };
+    }
+    b.extend(model_data(0, 0..2, 0..3));
+    FxModel { header: h, b, f: model_data(0, 2..4, 3..6) }
+}
+
+/// A type 109 level model: the quad with positions in units and its own material list.
+pub fn model_level() -> FxModel {
+    let mut h = Vec::new();
+    zeros(&mut h, 0x30);
+    model_physics(&mut h);
+    zeros(&mut h, 0x28);
+    model_scale(&mut h);
+    u32s(&mut h, &[4, 6, 0, 0]);
+    zeros(&mut h, 0x67);
+    model_mesh_infos(&mut h);
+    u32s(&mut h, &[0]);
+    u32s(&mut h, &[2]);
+    str32(&mut h, "/Lotus/Levels/Room/WallMat");
+    str32(&mut h, "/Lotus/Levels/Room/FloorMat");
+    model_physics(&mut h);
+    u32s(&mut h, &[0, 0]);
+    let mut b = vec![0, 0];
+    b.extend(model_data(1, 0..4, 0..6));
+    FxModel { header: h, b, f: Vec::new() }
+}
+
+/// What the rigged fixture's bones are stored as: rotation x, y, z, w and position.
+pub fn model_bone_transform(bone: usize) -> ([f32; 4], [f32; 3]) {
+    match bone {
+        0 => ([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0]),
+        // A quarter turn about Y, one unit up.
+        1 => ([0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2], [0.0, 1.0, 0.0]),
+        _ => ([0.0, 0.0, 0.0, 1.0], [0.5, 0.0, 0.25]),
+    }
+}
+
+/// The rows of the rigged fixture's inverse bind matrix for weighted bone `slot`.
+pub fn model_inverse_bind(slot: usize) -> [f32; 12] {
+    match slot {
+        // Arm: undoes Spine's turn and both offsets.
+        0 => [0.0, 0.0, -1.0, -0.5, 0.0, 1.0, 0.0, -1.0, 1.0, 0.0, 0.0, -0.25],
+        _ => [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    }
+}
+
+/// A type 281 rigged model: the quad skinned to a three-bone skeleton, all in B.
+pub fn model_rigged() -> FxModel {
+    let mut h = Vec::new();
+    zeros(&mut h, 0x30);
+    model_physics(&mut h);
+    zeros(&mut h, 0x2c);
+    model_scale(&mut h);
+    u32s(&mut h, &[MODEL_WEIGHTED.len() as u32]);
+    MODEL_WEIGHTED.iter().for_each(|name| str32(&mut h, name));
+    u32s(&mut h, &[6, MODEL_BONES.len() as u32, 4, 0]);
+    zeros(&mut h, 0x13);
+    u32s(&mut h, &[0, 0]); // B counts of zero: everything is in B
+    zeros(&mut h, 0x25);
+    u32s(&mut h, &[MODEL_BONES.len() as u32]);
+    for (name, parent) in MODEL_BONES {
+        str32(&mut h, name);
+        h.extend_from_slice(&parent.to_le_bytes());
+        zeros(&mut h, 2);
+    }
+    // One attachment struct, which also adds 0x10 bytes further on.
+    u32s(&mut h, &[1]);
+    zeros(&mut h, 0x10);
+    str32(&mut h, "Socket");
+    zeros(&mut h, 0x4c);
+    zeros(&mut h, 0x1a);
+    u32s(&mut h, &[7]); // bytes to skip in the body after the bind matrices
+    zeros(&mut h, 0x10 + 8);
+    model_mesh_infos(&mut h);
+    u32s(&mut h, &[0]);
+    u32s(&mut h, &[0]); // morphs
+    // Bone maps: both meshes use local bone 0 = weighted bone 1 (Root), 1 = 0 (Arm).
+    u32s(&mut h, &[2, 2, 1, 0, 2, 1, 0]);
+    u32s(&mut h, &[0]); // morph tables
+    zeros(&mut h, 0x2f);
+    model_physics(&mut h);
+    u32s(&mut h, &[0, 0]);
+
+    let mut b = vec![0, 0];
+    for slot in 0..MODEL_WEIGHTED.len() {
+        f32s(&mut b, &model_inverse_bind(slot));
+    }
+    zeros(&mut b, 7);
+    for bone in 0..MODEL_BONES.len() {
+        let (rotation, position) = model_bone_transform(bone);
+        f32s(&mut b, &rotation);
+        f32s(&mut b, &position);
+        zeros(&mut b, 12);
+    }
+    zeros(&mut b, 4 * MODEL_BONES.len() + 8);
+    b.extend(model_data(2, 0..4, 0..6));
+    FxModel { header: h, b, f: Vec::new() }
+}
+
+/// A model file: header in H after the common header (whose attributes name the
+/// materials), data in B and F.
+pub fn model_file(path: &str, type_id: u32, model: FxModel) -> FxFile {
+    let attributes = "Materials={\n    /Lotus/Materials/FrontMat,\n    BackMat\n}\n";
+    let mut h = common_header(&[path], attributes, type_id);
+    h.extend(model.header);
+    let data = |bytes: Vec<u8>| (!bytes.is_empty()).then(|| packed(bytes));
+    FxFile { path: path.into(), stale: false, parts: [Some(packed(h)), data(model.b), data(model.f)], type_id: Some(type_id), timestamp: TIMESTAMP }
+}
+
+/// Paths of the [`models`] fixture.
+pub mod mdl {
+    pub const STATIC: &str = "/Lotus/Objects/Crate/Crate.fbx";
+    pub const LEVEL: &str = "/Lotus/Levels/Room/0_c.fbx";
+    pub const RIGGED: &str = "/Lotus/Characters/Hero/Hero_skel.fbx";
+    pub const COLLISION: &str = "/Lotus/Objects/Crate/CrateCollision.fbx";
+    pub const OTHER_TYPE: &str = "/Lotus/Fx/Web/WebPatchMesh";
+    pub const OTHER_NAME: &str = "/Lotus/Levels/Room/Far_hlod.fbx";
+    pub const SHORT: &str = "/Lotus/Objects/Crate/CrateBroken.fbx";
+}
+
+/// One model of each layout wfscan reads, plus the ways a model doesn't export: nothing
+/// to draw, a type or a name with no reader, and data cut short.
+pub fn models() -> Fixture {
+    let mut short = model_static(true);
+    short.f.truncate(short.f.len() - 3);
+    let files = vec![
+        model_file(mdl::STATIC, 102, model_static(true)),
+        model_file(mdl::LEVEL, 109, model_level()),
+        model_file(mdl::RIGGED, 281, model_rigged()),
+        model_file(mdl::COLLISION, 102, model_static(false)),
+        simple_file(mdl::OTHER_TYPE, 299, 70),
+        simple_file(mdl::OTHER_NAME, 108, 72),
+        model_file(mdl::SHORT, 102, short),
+    ];
+    Fixture { name: "models", packages: vec![FxPackage { name: "Misc".into(), parts: "HBF", files }] }
+}
+
+// ----- sounds ----------------------------------------------------------------------
+
+/// The sample rate of the fixture's PCM sounds.
+pub const SOUND_RATE: u32 = 8000;
+
+/// Sample `frame` of channel `channel` of every fixture PCM sound: a 440 Hz tone, an
+/// octave higher on the second channel.
+pub fn sound_sample(frame: usize, channel: usize) -> i16 {
+    let phase = frame as f32 * 440.0 * (channel + 1) as f32 * std::f32::consts::TAU / SOUND_RATE as f32;
+    (phase.sin() * 12000.0) as i16
+}
+
+/// The audio header for a sound of `samples` frames whose data is `size` bytes.
+pub fn sound_header(codec: u32, channels: u8, samples: u32, table_len: u32, size: u32) -> Vec<u8> {
+    let mut h = Vec::new();
+    u32s(&mut h, &[codec, 1, 0, 0, 0]);
+    f32s(&mut h, &[0.5]);
+    u32s(&mut h, &[0, 0, SOUND_RATE]);
+    h.extend_from_slice(&[16, channels]);
+    u32s(&mut h, &[samples, 85000]);
+    h.extend_from_slice(&[0, 4, 0, 8]);
+    u32s(&mut h, &[0, 0, table_len, size]);
+    f32s(&mut h, &[-18.0, 1.0]);
+    zeros(&mut h, 20);
+    h
+}
+
+/// A PCM sound of `frames` frames with `in_b` bytes of its data at the end of B, after
+/// `other` bytes of something else, and the rest in F.
+pub fn sound_pcm(path: &str, channels: u8, frames: usize, other: usize, in_b: usize) -> FxFile {
+    let data: Vec<u8> = (0..frames).flat_map(|f| (0..usize::from(channels)).flat_map(move |c| sound_sample(f, c).to_le_bytes())).collect();
+    let mut b = vec![0xee; other];
+    b.extend_from_slice(&data[..in_b]);
+    sound_file(path, sound_header(0, channels, frames as u32, 0, data.len() as u32), b, data[in_b..].to_vec())
+}
+
+fn sound_file(path: &str, header: Vec<u8>, b: Vec<u8>, f: Vec<u8>) -> FxFile {
+    let data = |bytes: Vec<u8>| (!bytes.is_empty()).then(|| packed(bytes));
+    let h = headed(path, "CompressionHint=DEFAULT_COMPRESSION\n", 139, header);
+    FxFile { path: path.into(), stale: false, parts: [Some(packed(h)), data(b), data(f)], type_id: Some(139), timestamp: TIMESTAMP }
+}
+
+/// Paths of the [`sounds`] fixture.
+pub mod snd {
+    pub const TONE: &str = "/Lotus/Sounds/Tone.wav";
+    pub const SPLIT: &str = "/Lotus/Sounds/SplitStereo.wav";
+    pub const STREAMED: &str = "/Lotus/Music/Streamed.wav";
+    pub const VORBIS: &str = "/Lotus/Sounds/Compressed.wav";
+    pub const ADPCM: &str = "/Lotus/Sounds/Old.wav";
+    pub const SHORT: &str = "/Lotus/Sounds/Short.wav";
+}
+
+/// PCM sounds stored each way the cache stores them (all in B behind other data, split
+/// between B and F, all in F), a Vorbis sound (three packets of noise behind a packet
+/// table: it reads, but nothing can decode it), a codec with no reader and a sound
+/// whose data is cut short.
+pub fn sounds() -> Fixture {
+    let mut short = sound_pcm(snd::SHORT, 1, 400, 0, 800);
+    short.parts[1].as_mut().expect("the data is in B").data.truncate(700);
+    let mut vorbis_b = Vec::new();
+    u32s(&mut vorbis_b, &[3 | 1 << 16, 0x00e1_0000, 0, 20, 50, 0, 128, 700]);
+    vorbis_b.extend_from_slice(&noise(90, 5));
+    let files = vec![
+        sound_pcm(snd::TONE, 1, 4000, 5, 8000),
+        sound_pcm(snd::SPLIT, 2, 2000, 0, 1024),
+        sound_pcm(snd::STREAMED, 2, 1000, 12, 0),
+        sound_file(snd::VORBIS, sound_header(8, 1, 700, 8, 90), vorbis_b, Vec::new()),
+        sound_file(snd::ADPCM, sound_header(5, 1, 100, 0, 64), noise(64, 6), Vec::new()),
+        short,
+    ];
+    Fixture { name: "sounds", packages: vec![FxPackage { name: "Misc".into(), parts: "HBF", files }] }
+}
+
 /// Every fixture, for `gen-fixtures`.
 pub fn all() -> Vec<Fixture> {
-    vec![basic(), basic_updated(), textures()]
+    vec![basic(), basic_updated(), textures(), models(), sounds()]
 }
 
 #[cfg(test)]

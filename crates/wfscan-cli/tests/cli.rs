@@ -191,7 +191,7 @@ fn export_records_a_status_for_every_file() {
     assert_eq!(unsupported.as_array().unwrap().len(), 6, "the stale entry is not exported");
     let model = ok_json(&["list", "-m", &manifest, "--kind", "model", "--json"]);
     assert_eq!(model.as_array().unwrap().len(), 1);
-    assert_eq!(model[0]["export"]["reason"], "no model exporter yet");
+    assert_eq!(model[0]["export"]["reason"], "no reader for model type 269 with this name yet");
     let done = ok_json(&["list", "-m", &manifest, "--status", "ok", "--json"]);
     assert_eq!(done.as_array().unwrap().len(), 1);
     assert_eq!((&done[0]["export"]["exporter"], &done[0]["export"]["outputs"][0]), (&Value::from("texture-dds@1"), &Value::from("/Lotus/Interface/Icons/Thing.dds")));

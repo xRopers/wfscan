@@ -1,0 +1,17 @@
+[package]
+name = "vorbis-headers"
+description = "Generates wfscan-core/data/vorbis_headers.bin with libvorbis 1.3.7"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+publish = false
+
+# Not part of the wfscan workspace: it compiles libvorbis from C (through vorbis-sys,
+# which bundles libvorbis 1.3.7), and is only run to regenerate the data file.
+[workspace]
+
+[dependencies]
+libc = "0.2"
+ogg-sys = "0.0.9"
+vorbis-sys = "0.1.1"
+wfscan-core = { path = "../../crates/wfscan-core", default-features = false }
