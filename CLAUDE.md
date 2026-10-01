@@ -172,7 +172,7 @@ One JSON line per (package, internal path), sorted, stale copies after the live 
 - `index` without `--hash` reads only H parts, so it can't see a damaged B or F part; `--hash` is the full check.
 - Oodle goes through zscan-core's codec, which copies each block in and out. Fast enough (5.5 GiB/s over the whole cache); a direct FFI call would avoid the copies if it ever matters.
 - Fixtures stand in for Oodle with "flip" blocks (`0x8C` + inverted bytes) and a matching decoder passed to the reader. CLI tests use `Fixture::without_oodle()` and clear the Oodle environment variables.
-- No README yet. Stages 1-3 are committed (`01c5d96`); stage 4, the GUI and the sound reader are in the working tree.
+- No README yet. Stages 1-3 are committed on `master` (`01c5d96`); stage 4, sound export and the GUI are committed on the branch `models-audio-gui`, not merged yet.
 - The game updated between the first index and October 2026 (446,777 files with 1 stale then; 446,923 with 1,269 stale now). The old manifests are in the session scratchpad only; `wfscan diff` between them would answer the timestamp question in the stage 2 notes and hasn't been run.
 
 ## Open decisions
