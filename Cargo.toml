@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/wfscan-core", "crates/wfscan-cli", "crates/wfscan-fixtures"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+rust-version = "1.89"
+
+[workspace.dependencies]
+wfscan-core = { path = "crates/wfscan-core", default-features = false }
+wfscan-fixtures = { path = "crates/wfscan-fixtures" }
+# Oodle goes through zscan's loader for the user's own oo2core library.
+zscan-core = { git = "https://github.com/xRopers/zscan", tag = "v0.1.0", features = ["oodle"] }
+# BCn decoding and PNG encoding for texture export. texscan has no tags yet, so a commit.
+texscan-core = { git = "https://github.com/xRopers/texscan", rev = "70ae993c99a39468b77f9ab2f7ac687a06051fe3" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crc32fast = "1.4"
+memmap2 = "0.9"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"

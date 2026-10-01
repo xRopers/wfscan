@@ -1,0 +1,139 @@
+{
+  "files": [
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 218,
+          "crc32": 1185546506,
+          "size": 600
+        }
+      },
+      "path": "/Lotus/BodyOnly.bin",
+      "stale": false,
+      "type": null
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 274,
+          "crc32": 1537930031,
+          "size": 800
+        },
+        "H": {
+          "compressed_size": 163,
+          "crc32": 3335954556,
+          "size": 262
+        }
+      },
+      "path": "/Lotus/Characters/New_skel.fbx",
+      "stale": false,
+      "type": 269
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 1700,
+          "crc32": 4004788962,
+          "size": 5000
+        },
+        "H": {
+          "compressed_size": 217,
+          "crc32": 799340500,
+          "size": 384
+        }
+      },
+      "path": "/Lotus/Characters/Tenno/Excalibur/Excalibur_skel.fbx",
+      "stale": false,
+      "type": 269
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 1686,
+          "crc32": 1989824817,
+          "size": 3100
+        },
+        "F": {
+          "compressed_size": 2000,
+          "crc32": 770229949,
+          "size": 2000
+        },
+        "H": {
+          "compressed_size": 155,
+          "crc32": 2677129445,
+          "size": 255
+        }
+      },
+      "path": "/Lotus/Levels/Big.level",
+      "stale": false,
+      "type": 5
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 909,
+          "crc32": 2271179361,
+          "size": 900
+        },
+        "H": {
+          "compressed_size": 71,
+          "crc32": 498906452,
+          "size": 71
+        }
+      },
+      "path": "/Lotus/Scripts/Test.lua",
+      "stale": false,
+      "type": 22
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "H": {
+          "compressed_size": 68,
+          "crc32": 780699002,
+          "size": 68
+        }
+      },
+      "path": "/Lotus/Scripts/Test.lua",
+      "stale": true,
+      "type": 22
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "H": {
+          "compressed_size": 103,
+          "crc32": 3492717564,
+          "size": 103
+        }
+      },
+      "path": "/Lotus/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+      "stale": false,
+      "type": 1
+    },
+    {
+      "package": "Texture",
+      "parts": {
+        "F": {
+          "compressed_size": 1373,
+          "crc32": 3880341617,
+          "size": 1364
+        },
+        "H": {
+          "compressed_size": 134,
+          "crc32": 3474405815,
+          "size": 134
+        }
+      },
+      "path": "/Lotus/Interface/Icons/Thing.png",
+      "stale": false,
+      "type": 163
+    }
+  ],
+  "name": "basic-updated"
+}

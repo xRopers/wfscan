@@ -1,0 +1,264 @@
+{
+  "files": [
+    {
+      "package": "LightMap",
+      "parts": {
+        "B": {
+          "compressed_size": 162,
+          "crc32": 4049961061,
+          "size": 2040
+        },
+        "H": {
+          "compressed_size": 116,
+          "crc32": 790591085,
+          "size": 116
+        }
+      },
+      "path": "/Lotus/Levels/Room/0_cross.hdr",
+      "stale": false,
+      "type": 183
+    },
+    {
+      "package": "LightMap",
+      "parts": {
+        "B": {
+          "compressed_size": 51,
+          "crc32": 1084457530,
+          "size": 384
+        },
+        "H": {
+          "compressed_size": 114,
+          "crc32": 3805974681,
+          "size": 114
+        }
+      },
+      "path": "/Lotus/Levels/Room/0_fvl.raw",
+      "stale": false,
+      "type": 176
+    },
+    {
+      "package": "Texture",
+      "parts": {
+        "F": {
+          "compressed_size": 33,
+          "crc32": 2463803842,
+          "size": 340
+        },
+        "H": {
+          "compressed_size": 129,
+          "crc32": 2779687172,
+          "size": 129
+        }
+      },
+      "path": "/Lotus/Interface/Icons/Icon.png",
+      "stale": false,
+      "type": 163
+    },
+    {
+      "package": "Texture",
+      "parts": {
+        "B": {
+          "compressed_size": 38,
+          "crc32": 702835728,
+          "size": 56
+        },
+        "F": {
+          "compressed_size": 19,
+          "crc32": 465787050,
+          "size": 128
+        },
+        "H": {
+          "compressed_size": 118,
+          "crc32": 2899232176,
+          "size": 118
+        }
+      },
+      "path": "/Lotus/Textures/Compressed_n.tga",
+      "stale": false,
+      "type": 184
+    },
+    {
+      "package": "Texture",
+      "parts": {
+        "B": {
+          "compressed_size": 43,
+          "crc32": 548000625,
+          "size": 60
+        },
+        "F": {
+          "compressed_size": 52,
+          "crc32": 1050206259,
+          "size": 960
+        },
+        "H": {
+          "compressed_size": 117,
+          "crc32": 619665612,
+          "size": 117
+        }
+      },
+      "path": "/Lotus/Textures/DetailArray",
+      "stale": false,
+      "type": 166
+    },
+    {
+      "package": "Texture",
+      "parts": {
+        "B": {
+          "compressed_size": 14,
+          "crc32": 24409655,
+          "size": 32
+        },
+        "H": {
+          "compressed_size": 113,
+          "crc32": 2518273782,
+          "size": 113
+        }
+      },
+      "path": "/Lotus/Textures/Height.lchm",
+      "stale": false,
+      "type": 163
+    },
+    {
+      "package": "Texture",
+      "parts": {
+        "B": {
+          "compressed_size": 37,
+          "crc32": 2963391080,
+          "size": 256
+        },
+        "H": {
+          "compressed_size": 110,
+          "crc32": 3978690728,
+          "size": 110
+        }
+      },
+      "path": "/Lotus/Textures/Lut.cube",
+      "stale": false,
+      "type": 174
+    },
+    {
+      "package": "Texture",
+      "parts": {
+        "B": {
+          "compressed_size": 23,
+          "crc32": 1624327860,
+          "size": 85
+        },
+        "H": {
+          "compressed_size": 113,
+          "crc32": 3617289296,
+          "size": 113
+        }
+      },
+      "path": "/Lotus/Textures/Mask_mm.png",
+      "stale": false,
+      "type": 163
+    },
+    {
+      "package": "Texture",
+      "parts": {
+        "B": {
+          "compressed_size": 37,
+          "crc32": 2963391080,
+          "size": 256
+        },
+        "H": {
+          "compressed_size": 113,
+          "crc32": 1775197351,
+          "size": 113
+        }
+      },
+      "path": "/Lotus/Textures/Noise_v.png",
+      "stale": false,
+      "type": 174
+    },
+    {
+      "package": "Texture",
+      "parts": {
+        "B": {
+          "compressed_size": 26,
+          "crc32": 1539777769,
+          "size": 80
+        },
+        "F": {
+          "compressed_size": 16,
+          "crc32": 3853150853,
+          "size": 256
+        },
+        "H": {
+          "compressed_size": 113,
+          "crc32": 3332481653,
+          "size": 113
+        }
+      },
+      "path": "/Lotus/Textures/Short_d.png",
+      "stale": false,
+      "type": 163
+    },
+    {
+      "package": "Texture",
+      "parts": {
+        "B": {
+          "compressed_size": 119,
+          "crc32": 4134815299,
+          "size": 504
+        },
+        "H": {
+          "compressed_size": 117,
+          "crc32": 3717470582,
+          "size": 117
+        }
+      },
+      "path": "/Lotus/Textures/Sky_cmcross.hdr",
+      "stale": false,
+      "type": 177
+    },
+    {
+      "package": "Texture",
+      "parts": {
+        "B": {
+          "compressed_size": 26,
+          "crc32": 2973517265,
+          "size": 84
+        },
+        "F": {
+          "compressed_size": 32,
+          "crc32": 1239942418,
+          "size": 1280
+        },
+        "H": {
+          "compressed_size": 117,
+          "crc32": 4017280830,
+          "size": 117
+        }
+      },
+      "path": "/Lotus/Textures/Split_d.png",
+      "stale": false,
+      "type": 163
+    },
+    {
+      "package": "Texture",
+      "parts": {
+        "B": {
+          "compressed_size": 22,
+          "crc32": 3873155539,
+          "size": 40
+        },
+        "F": {
+          "compressed_size": 26,
+          "crc32": 3939860976,
+          "size": 640
+        },
+        "H": {
+          "compressed_size": 117,
+          "crc32": 3284435566,
+          "size": 117
+        }
+      },
+      "path": "/Lotus/Textures/TallPackMap",
+      "stale": false,
+      "type": 188
+    }
+  ],
+  "name": "textures"
+}

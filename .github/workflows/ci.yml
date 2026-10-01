@@ -1,0 +1,55 @@
+# Build, test and lint with and without the Oodle feature.
+#
+# Runs on Windows, where wfscan is developed. No Oodle library and no game cache are
+# available here, so the real-cache test skips; run it locally with WFSCAN_CACHE_DIR and
+# WFSCAN_OODLE_DLL set.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.flags || 'default features' }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flags: ["", "--no-default-features"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.flags }}
+      - name: Build
+        run: cargo build --workspace --all-targets ${{ matrix.flags }}
+      - name: Test
+        run: cargo test --workspace ${{ matrix.flags }}
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets ${{ matrix.flags }}
+
+  msrv:
+    name: MSRV (1.89)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - run: cargo check --workspace --all-targets
