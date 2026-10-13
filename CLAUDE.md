@@ -173,7 +173,7 @@ One JSON line per (package, internal path), sorted, stale copies after the live 
 - Oodle goes through zscan-core's codec, which copies each block in and out. Fast enough (5.5 GiB/s over the whole cache); a direct FFI call would avoid the copies if it ever matters.
 - Fixtures stand in for Oodle with "flip" blocks (`0x8C` + inverted bytes) and a matching decoder passed to the reader. CLI tests use `Fixture::without_oodle()` and clear the Oodle environment variables.
 - Published at github.com/xRopers/wfscan (public, like the siblings). Release v0.1.0 (October 2026): a Windows x64 zip of both programs built with the C runtime linked in (`RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target x86_64-pc-windows-msvc -p wfscan-cli -p wfscan-gui`; without `--target` that build fails in a build script), the README with its screenshots, LICENSE and `licenses/COPYING-libvorbis`. The README screenshots show file names and a waveform only: no game art.
-- The game updated between the first index and October 2026 (446,777 files with 1 stale then; 446,923 with 1,269 stale now). The old manifests are in the session scratchpad only; `wfscan diff` between them would answer the timestamp question in the stage 2 notes and hasn't been run.
+- The game updated between the first index and October 2026 (446,777 files with 1 stale then; 446,923 with 1,269 stale now). No manifest from before that update was kept, so the timestamp question in the stage 2 notes is still open: save a manifest now (`wfscan index ... -o`) and run `wfscan diff` against a new one after the next update.
 
 ## Open decisions
 - Oodle: runtime DLL only, or a pure-Rust Kraken decoder as the default with the DLL as fallback.
