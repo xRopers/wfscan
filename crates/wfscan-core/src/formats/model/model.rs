@@ -120,7 +120,15 @@ impl Model {
             return Err(ModelError::NoMeshes);
         }
         let vertices = body.positions.len();
-        let scale = if variant.positions_are_scaled() {
+        let scale = if variant == Variant::Terrain166 {
+            // Terrain: X and Z span the size in the scale vectors' third and fourth
+            // values; heights are in units already.
+            let size = |i: usize| match header.scale1[i].abs().max(header.scale2[i].abs()) {
+                0.0 => 1.0,
+                s => s,
+            };
+            [size(2), 1.0, size(3)]
+        } else if variant.positions_are_scaled() && !header.float_positions {
             [0, 1, 2].map(|axis| match header.scale1[axis].abs().max(header.scale2[axis].abs()) {
                 0.0 => 1.0,
                 scale => scale,

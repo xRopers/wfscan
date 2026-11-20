@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use wfscan_core::export::check_manifest;
 use wfscan_core::{
     AudioOutput, Cache, Classifier, ExportOptions, Exporters, FileEntry, FormatOptions, IndexOptions, Kind, Manifest, Oodle, OodleDecoder,
-    Part, Status, TextureOutput, export, index, package_info, report, with_input,
+    Part, Status, TextureOutput, VideoOutput, export, index, package_info, report, with_input,
 };
 
 /// The protocol version this server speaks, and the older ones it also accepts.
@@ -48,13 +48,16 @@ pub struct Server {
     /// Loaded at the start if it matches the cache; saved after each export.
     manifest_path: Option<PathBuf>,
     oodle: Result<Oodle, String>,
+    /// Given with `--bink-dll`; loaded the first time an export asks for PNG frames.
+    bink_dll: Option<PathBuf>,
+    bink: Option<std::sync::Arc<wfscan_core::BinkLibrary>>,
     allow_in_use: bool,
     state: Option<State>,
 }
 
 impl Server {
-    pub fn new(cache_dir: PathBuf, manifest_path: Option<PathBuf>, oodle: Result<Oodle, String>, allow_in_use: bool) -> Self {
-        Self { cache_dir, manifest_path, oodle, allow_in_use, state: None }
+    pub fn new(cache_dir: PathBuf, manifest_path: Option<PathBuf>, oodle: Result<Oodle, String>, bink_dll: Option<PathBuf>, allow_in_use: bool) -> Self {
+        Self { cache_dir, manifest_path, oodle, bink_dll, bink: None, allow_in_use, state: None }
     }
 
     /// Answer messages from `input` on `output` until `input` ends.
@@ -324,6 +327,11 @@ impl Server {
         let all = opt_bool(args, "all")?.unwrap_or(false);
         let texture: TextureOutput = opt_str(args, "texture_format")?.unwrap_or("dds").parse().map_err(|e| anyhow!("{e}"))?;
         let audio: AudioOutput = opt_str(args, "audio_format")?.unwrap_or("native").parse().map_err(|e| anyhow!("{e}"))?;
+        let video: VideoOutput = opt_str(args, "video_format")?.unwrap_or("bk2").parse().map_err(|e| anyhow!("{e}"))?;
+        if video == VideoOutput::Png && self.bink.is_none() {
+            self.bink = Some(std::sync::Arc::new(crate::load_bink(self.bink_dll.as_deref(), &self.cache_dir)?));
+        }
+        let bink = if video == VideoOutput::Png { self.bink.clone() } else { None };
         let raw_unsupported = opt_bool(args, "raw_unsupported")?.unwrap_or(false);
         let dry_run = opt_bool(args, "dry_run")?.unwrap_or(false);
         let force = opt_bool(args, "force")?.unwrap_or(false);
@@ -364,7 +372,7 @@ impl Server {
             bail!("nothing matches");
         }
 
-        let exporters = Exporters::builtin(&FormatOptions { texture, audio, vorbis: None });
+        let exporters = Exporters::builtin(&FormatOptions { texture, audio, vorbis: None, video, bink });
         let opts = ExportOptions { files: Some(selected.iter().copied().collect()), dry_run, force, raw_unsupported, ..Default::default() };
         // A dry run works on a copy, so its records don't stay behind.
         let mut copy;
@@ -474,6 +482,7 @@ fn tools() -> Vec<Value> {
                 "all": { "type": "boolean" },
                 "texture_format": { "type": "string", "enum": ["dds", "png"], "description": "Default dds" },
                 "audio_format": { "type": "string", "enum": ["native", "wav"], "description": "Default native" },
+                "video_format": { "type": "string", "enum": ["bk2", "png"], "description": "Default bk2; png writes every frame (needs the Bink library: the game's Tools/Bink2/bink2w64.dll is found next to the cache)" },
                 "raw_unsupported": { "type": "boolean", "description": "Write files nothing can convert as their raw parts (PATH.H, .B, .F)" },
                 "dry_run": { "type": "boolean", "description": "Work out the results but write nothing" },
                 "force": { "type": "boolean", "description": "Export again even where an earlier export still stands" },

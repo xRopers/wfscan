@@ -166,7 +166,7 @@ fn what_does_not_export_says_why() {
         (record.status, record.reason.clone().unwrap())
     };
     assert_eq!(reason(mdl::COLLISION), (Status::Unsupported, "the model has no meshes (collision data only)".into()));
-    assert_eq!(reason(mdl::OTHER_TYPE), (Status::Unsupported, "no reader for model type 299 with this name yet".into()));
+    assert_eq!(reason(mdl::OTHER_TYPE), (Status::Unsupported, "no reader for model type 290 with this name yet".into()));
     assert_eq!(reason(mdl::OTHER_NAME).0, Status::Unsupported);
     let (status, why) = reason(mdl::SHORT);
     assert!(status == Status::Failed && why.starts_with("F: the data ends at"), "{why}");
@@ -288,7 +288,21 @@ fn real_models_are_well_formed() {
     let (mut manifest, _) = index(&cache, Some(oodle), &IndexOptions::default()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let exporters = Exporters::builtin(&FormatOptions::default());
-    let folders = ["/Lotus/Characters/Tenno/Excalibur/", "/Lotus/Weapons/Tenno/Melee/Swords/", "/Lotus/Levels/CorpusShipRemastered/ConLjunction02/"];
+    let folders = [
+        "/Lotus/Characters/Tenno/Excalibur/",
+        "/Lotus/Weapons/Tenno/Melee/Swords/",
+        "/Lotus/Levels/CorpusShipRemastered/ConLjunction02/",
+        // Plain 105 level pieces, 108 `_dcm` and `_hlod` models, 299 patch meshes.
+        "/Lotus/Levels/CorpusShip/IntHangar01/",
+        "/Lotus/Characters/NewWar/NecramechRanged/",
+        "/Lotus/Levels/CivilianHubs/PoeRemaster/",
+        "/Lotus/Objects/Duviri/Natural/Foliage/",
+        // Terrain (166).
+        "/Lotus/Levels/CorpusIcePlanet/IceSabotage/",
+        // `SupportRigidAnimation=1` and `CompactVertices=0` static models.
+        "/Lotus/Weapons/Grineer/Melee/GrineerCombatKnife/",
+        "/Lotus/Objects/Guild/Ships/CrpStanchionShipV2/",
+    ];
     for folder in folders {
         let opts = ExportOptions { path: Some(folder.into()), kinds: vec![Kind::Model], ..Default::default() };
         let stats = export(&cache, &mut manifest, None, &exporters, Some(oodle), tmp.path(), &opts).unwrap();

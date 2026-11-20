@@ -23,7 +23,23 @@
 //! `_hlod` forms of 102 and 105). Plain 105 (`Level105`) was worked out from the November
 //! 2026 cache: the 109 header parses all 1,222 of them, its 0x67-byte gap is 102's
 //! gap / B counts / gap, and B (after PhysX and the 2-byte prefix) plus F is exactly
-//! 24 bytes a vertex and 2 an index.
+//! 24 bytes a vertex and 2 an index. Patch meshes (299, `Patch299`), also from that
+//! cache: the 281 header with the patch list and grid between the 0x2f-byte block and
+//! the physics reference, and 32-byte weighted vertices (one "bone" per grid cell); the
+//! bone tables after the skeleton are 4 bytes shorter than 281's. All 207 read exactly.
+//! Type 108 (`Dcm108`, `Hlod108`), also from that cache: all `_dcm` and `_hlod` files,
+//! with 102's header up to the mesh list; B and F hold exactly 24 bytes a vertex (32 for
+//! `_dcm`: 8 more after each part's vertices) and 2 an index. The older `Dcm102` and
+//! `Hlod102` guesses for 102 and 105 don't fit these and are untested (no such files).
+//! Terrain (159, 160, 166: `Terrain166`): the header and the 16-byte vertex layout follow
+//! the original's description of its type 159 reader; the error list ending the header
+//! and the 15 bytes per vertex after the indices were found in the November 2026 cache,
+//! where all 1,704 terrains read exactly that way.
+//!
+//! Two attribute lines change a body's layout (found in the November 2026 cache, where
+//! each matches exactly the static models that failed without it and no others):
+//! `CompactVertices=0` makes positions four f32s in units, as level vertices are (3
+//! files); `SupportRigidAnimation=1` adds 48 bytes per mesh before the vertices (6).
 
 use crate::formats::reader::{ReadError, Reader};
 
@@ -41,8 +57,19 @@ pub enum Variant {
     /// Type 105 under any other name: a level's model with the level header (and its
     /// material list) but packed vertices split between B and F, as in 102.
     Level105,
+    /// Type 108 named `*_dcm` or `*_hlod`: 102's header up to the mesh list (B counts
+    /// included), then the `_dcm` / `_hlod` tail. `_dcm` vertices carry 8 more bytes each;
+    /// `_hlod` headers name their HLOD material.
+    Dcm108,
+    Hlod108,
+    /// Types 159, 160 and 166: terrain (`.tmesh`). Its own header; B holds a PhysX
+    /// heightfield, then 16-byte vertices with half-float positions, then indices.
+    Terrain166,
     /// Type 281: a rigged model.
     Rigged281,
+    /// Type 299: a patch mesh (copies of other meshes scattered over a grid, baked into
+    /// one): the rigged header with the patch list before its error list.
+    Patch299,
 }
 
 impl Variant {
@@ -51,6 +78,8 @@ impl Variant {
         let name = path.rsplit('/').next().unwrap_or(path);
         let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
         match (type_id, stem) {
+            (108, s) if s.ends_with("_dcm") => Some(Self::Dcm108),
+            (108, s) if s.ends_with("_hlod") => Some(Self::Hlod108),
             (102 | 105, s) if s.ends_with("_dcm") => Some(Self::Dcm102),
             (102 | 105, s) if s.ends_with("_hlod") => Some(Self::Hlod102),
             (_, s) if s.ends_with("_dcm") || s.ends_with("_hlod") || s.ends_with("_sm") => None,
@@ -58,12 +87,20 @@ impl Variant {
             (109, _) => Some(Self::Level109),
             (105, _) => Some(Self::Level105),
             (281, _) => Some(Self::Rigged281),
+            (299, _) => Some(Self::Patch299),
+            (159 | 160 | 166, _) => Some(Self::Terrain166),
             _ => None,
         }
     }
 
     pub fn is_rigged(self) -> bool {
         self == Self::Rigged281
+    }
+
+    /// Whether vertices carry bone indices and weights (32 bytes instead of 24). Patch
+    /// meshes do, one "bone" per grid cell, but have no skeleton to export.
+    pub fn has_weights(self) -> bool {
+        matches!(self, Self::Rigged281 | Self::Patch299)
     }
 
     /// Whether positions are fractions of the header's scale (as opposed to plain floats).
@@ -120,6 +157,19 @@ pub struct ModelHeader {
     /// Bytes of PhysX data at the start of B, per PhysX mesh.
     pub physx_lengths: Vec<u32>,
     pub errors: Vec<String>,
+    /// From the attribute text (set by the caller, not in these bytes):
+    /// `CompactVertices=0`: positions are four f32s (16 bytes) instead of four i16s.
+    pub float_positions: bool,
+    /// `SupportRigidAnimation=1`: 48 bytes per mesh in the body, before the vertices.
+    pub rigid_animation: bool,
+}
+
+impl ModelHeader {
+    /// Set what the common header's attribute text says about the body's layout.
+    pub fn apply_attributes(&mut self, attributes: &str) {
+        self.float_positions = attributes.lines().any(|l| l.trim() == "CompactVertices=0");
+        self.rigid_animation = attributes.lines().any(|l| l.trim() == "SupportRigidAnimation=1");
+    }
 }
 
 /// The original's "physics struct": two u32s, two more bytes if either has bit 3 set
@@ -204,9 +254,37 @@ fn morph_tables(r: &mut Reader, meshes: &mut [MeshInfo]) -> Result<u32, ReadErro
         for _ in 0..r.count(1000, "morph name count")? {
             r.skip_string("morph name")?;
         }
-        skip_array(r, 30, 4, "morph table tail")?;
+        skip_array(r, 100, 4, "morph table tail")?;
     }
     Ok(skip)
+}
+
+/// Terrain's header: two (empty) strings, the two scale vectors, a u64 index count, the
+/// mesh list, the vertex count, a count of 64-byte blocks to skip in the body, a list of
+/// arrays, and the PhysX list (its one entry is the heightfield at the start of B).
+fn terrain_header(r: &mut Reader, h: &mut ModelHeader) -> Result<(), ReadError> {
+    r.skip_string("terrain string")?;
+    r.skip_string("terrain string")?;
+    h.scale1 = r.f32s("scale")?;
+    h.scale2 = r.f32s("scale")?;
+    // A u64; the high half is always zero.
+    h.index_count = r.u32("index count")?;
+    r.count(0, "index count (high half)")?;
+    h.mesh_infos = mesh_infos(r)?;
+    h.vertex_count = r.u32("vertex count")?;
+    r.skip(0x10, "header")?;
+    h.body_skip1 = r.count(1000, "body skip")? as u32;
+    r.skip(0x20, "header")?;
+    for _ in 0..r.count(100, "terrain array count")? {
+        let length = r.count(100_000, "terrain array length")?;
+        r.skip(length * 4 + 16, "terrain array")?;
+    }
+    r.skip(12, "header")?;
+    h.physx_lengths = physx_lengths(r)?;
+    h.errors = r.strings(1000, "error list")?;
+    r.finish()?;
+    (h.vertex_count_b, h.index_count_b) = (h.vertex_count, h.index_count);
+    Ok(())
 }
 
 /// Parse a model's header: the H part after the common header.
@@ -223,6 +301,10 @@ pub fn header(variant: Variant, data: &[u8]) -> Result<ModelHeader, ReadError> {
         h.bone_count = r.u32("bone count")?;
         Ok(())
     };
+    if variant == Variant::Terrain166 {
+        terrain_header(r, &mut h)?;
+        return Ok(h);
+    }
     r.skip(0x30, "header")?;
     match variant {
         Variant::Static102 => {
@@ -237,6 +319,38 @@ pub fn header(variant: Variant, data: &[u8]) -> Result<ModelHeader, ReadError> {
             skip_array(r, 1000, 2, "u16 list")?;
             skip_physics(r, true)?;
             h.physx_lengths = physx_lengths(r)?;
+            h.errors = r.strings(1000, "error list")?;
+            r.finish()?;
+            if h.vertex_count_b == 0 {
+                (h.vertex_count_b, h.index_count_b) = (h.vertex_count, h.index_count);
+            }
+        }
+        Variant::Dcm108 | Variant::Hlod108 => {
+            skip_physics(r, true)?;
+            r.skip(0x28, "header")?;
+            counts(r, &mut h)?;
+            r.skip(0x22, "header")?;
+            h.vertex_count_b = r.u32("B vertex count")?;
+            h.index_count_b = r.u32("B index count")?;
+            r.skip(0x3d, "header")?;
+            h.mesh_infos = mesh_infos(r)?;
+            skip_array(r, 1000, 2, "u16 list")?;
+            if variant == Variant::Dcm108 {
+                r.skip(1, "header")?;
+                if r.u32("DCM kind")? == 2 {
+                    r.skip(6, "header")?;
+                }
+            } else {
+                r.skip(4, "header")?;
+            }
+            skip_physics(r, false)?;
+            h.physx_lengths = physx_lengths(r)?;
+            if variant == Variant::Hlod108 {
+                // The HLOD material (`C0g0_hlod.hlm`, a type 218 file beside the model),
+                // for every mesh.
+                let material = r.string("HLOD material")?;
+                h.material_paths = vec![material; h.mesh_infos.len()];
+            }
             h.errors = r.strings(1000, "error list")?;
             r.finish()?;
             if h.vertex_count_b == 0 {
@@ -296,7 +410,8 @@ pub fn header(variant: Variant, data: &[u8]) -> Result<ModelHeader, ReadError> {
                 (h.vertex_count_b, h.index_count_b) = (h.vertex_count, h.index_count);
             }
         }
-        Variant::Rigged281 => {
+        Variant::Terrain166 => unreachable!("terrain is read above"),
+        Variant::Rigged281 | Variant::Patch299 => {
             skip_physics(r, true)?;
             r.skip(0x2c, "header")?;
             h.scale1 = r.f32s("scale")?;
@@ -338,6 +453,18 @@ pub fn header(variant: Variant, data: &[u8]) -> Result<ModelHeader, ReadError> {
                 .collect::<Result<_, ReadError>>()?;
             h.body_skip2 = morph_tables(r, &mut h.mesh_infos)?;
             r.skip(0x2f, "header")?;
+            if variant == Variant::Patch299 {
+                // The patch list, matching the `PatchInfo` attribute text: per entry 12
+                // bytes, the source mesh, its seed and 19 floats (density, falloffs and
+                // the variance ranges). Then the grid: GridX and GridZ (u32), the cell
+                // sizes, the patch radius and two more floats, and one byte.
+                for _ in 0..r.count(100, "patch count")? {
+                    r.skip(12, "patch")?;
+                    r.skip_string("patch mesh")?;
+                    r.skip(4 + 19 * 4, "patch")?;
+                }
+                r.skip(28 + 1, "patch grid")?;
+            }
             skip_physics(r, true)?;
             h.physx_lengths = physx_lengths(r)?;
             h.errors = r.strings(1000, "error list")?;
@@ -382,9 +509,9 @@ pub enum BodyError {
     Split { what: &'static str, b: u32, total: u32 },
 }
 
-fn vertices(r: &mut Reader, variant: Variant, count: u32, body: &mut ModelBody) -> Result<(), ReadError> {
+fn vertices(r: &mut Reader, variant: Variant, h: &ModelHeader, count: u32, body: &mut ModelBody) -> Result<(), ReadError> {
     for _ in 0..count {
-        let position = if variant.positions_are_scaled() {
+        let position = if variant.positions_are_scaled() && !h.float_positions {
             let mut p = [0.0; 4];
             for value in &mut p {
                 *value = f32::from(r.i16("position")?) / 32767.0;
@@ -401,7 +528,7 @@ fn vertices(r: &mut Reader, variant: Variant, count: u32, body: &mut ModelBody) 
         body.occlusion.push(r.u8("occlusion")?);
         body.uv0.push([r.f16("UV")?, r.f16("UV")?]);
         body.uv1.push([r.f16("UV")?, r.f16("UV")?]);
-        if variant.is_rigged() {
+        if variant.has_weights() {
             body.bone_indices.push(r.array("bone indices")?);
             let packed = r.u32("bone weights")?;
             let three = [0, 10, 20].map(|shift| (packed >> shift & 0x3ff) as f32 / 1023.0);
@@ -419,6 +546,10 @@ fn indices(r: &mut Reader, count: u32, body: &mut ModelBody) -> Result<(), ReadE
     Ok(())
 }
 
+/// Bytes per vertex that 108's `_dcm` models carry after each part's vertices, before
+/// its indices (`_hlod` ones don't).
+const EXTRA_108: usize = 8;
+
 /// How large a block of PhysX data some level models carry in front of their vertices.
 const LEVEL_PHYSX_BLOCK: usize = 0x120;
 
@@ -426,9 +557,29 @@ fn body_b(r: &mut Reader, variant: Variant, h: &ModelHeader, body: &mut ModelBod
     for &length in &h.physx_lengths {
         r.skip(length as usize, "PhysX data")?;
     }
+    if variant == Variant::Terrain166 {
+        r.skip(64 * h.body_skip1 as usize, "terrain body")?;
+        for _ in 0..h.vertex_count {
+            // Half floats: X and Z from -0.5 to 0.5 of the terrain's size, Y in units.
+            let [x, y, z] = [r.f16("position")?, r.f16("position")?, r.f16("position")?];
+            body.positions.push([x - 0.5, y, z - 0.5, 0.0]);
+            r.skip(6, "terrain vertex")?;
+            r.skip(4, "vertex colour")?;
+            // No UVs in the file: project them flat over the grid. No baked occlusion.
+            body.uv0.push([x, z]);
+            body.uv1.push([x, z]);
+            body.occlusion.push(255);
+        }
+        indices(r, h.index_count, body)?;
+        // Then 15 bytes per vertex in every terrain of the November 2026 cache:
+        // heightfield-like samples (16-bit heights, `7f 7f` material bytes), not part of
+        // the mesh drawn.
+        r.skip(h.vertex_count as usize * 15, "terrain samples")?;
+        return r.finish();
+    }
     match variant {
         Variant::Static102 | Variant::Level105 => {}
-        Variant::Dcm102 | Variant::Hlod102 => r.skip(64 * h.bone_count as usize, "bone data")?,
+        Variant::Dcm102 | Variant::Hlod102 | Variant::Dcm108 | Variant::Hlod108 => r.skip(64 * h.bone_count as usize, "bone data")?,
         Variant::Level109 => {
             r.skip(64 * h.bone_count as usize, "bone data")?;
             // More PhysX blocks, not counted anywhere: each ends in 16 zero bytes.
@@ -436,10 +587,11 @@ fn body_b(r: &mut Reader, variant: Variant, h: &ModelHeader, body: &mut ModelBod
                 r.skip(LEVEL_PHYSX_BLOCK, "PhysX block")?;
             }
         }
-        Variant::Rigged281 => {}
+        Variant::Rigged281 | Variant::Patch299 => {}
+        Variant::Terrain166 => unreachable!("terrain is read above"),
     }
     r.skip(2, "body prefix")?;
-    if variant == Variant::Rigged281 {
+    if matches!(variant, Variant::Rigged281 | Variant::Patch299) {
         for _ in 0..h.weighted_bones.len() {
             body.inverse_binds.push(r.f32s("inverse bind matrix")?);
         }
@@ -451,14 +603,22 @@ fn body_b(r: &mut Reader, variant: Variant, h: &ModelHeader, body: &mut ModelBod
         }
         r.skip(4 * h.bone_tree.len(), "bone tables")?;
         if !h.bone_tree.is_empty() {
-            r.skip(8, "bone tables")?;
+            // 4 bytes shorter in patch meshes: B is exactly 8 bytes a B vertex over
+            // otherwise, in all 207 of the November 2026 cache.
+            r.skip(if variant == Variant::Patch299 { 4 } else { 8 }, "bone tables")?;
         }
     }
-    vertices(r, variant, h.vertex_count_b, body)?;
+    // `SupportRigidAnimation=1`: 48 bytes (a 3x4 matrix, presumably each mesh's pivot)
+    // per mesh. Before the vertices: placed after them, a Grineer knife draws smeared.
+    if h.rigid_animation {
+        r.skip(48 * h.mesh_infos.len(), "rigid animation")?;
+    }
+    vertices(r, variant, h, h.vertex_count_b, body)?;
     match variant {
-        Variant::Rigged281 => r.skip(h.body_skip2 as usize * 8, "morph data")?,
+        Variant::Rigged281 | Variant::Patch299 => r.skip(h.body_skip2 as usize * 8, "morph data")?,
         // Some DCM models carry 8 more bytes per vertex before the indices.
         Variant::Dcm102 if r.remaining() > h.index_count as usize * 2 => r.skip(h.vertex_count as usize * 8, "extra vertex data")?,
+        Variant::Dcm108 => r.skip(h.vertex_count_b as usize * EXTRA_108, "extra vertex data")?,
         _ => {}
     }
     indices(r, h.index_count_b, body)?;
@@ -469,7 +629,7 @@ fn body_b(r: &mut Reader, variant: Variant, h: &ModelHeader, body: &mut ModelBod
         r.skip(h.morph_count as usize * 8, "morph data")?;
     }
     // The layouts whose end is known must end here.
-    if matches!(variant, Variant::Static102 | Variant::Level105 | Variant::Rigged281) {
+    if matches!(variant, Variant::Static102 | Variant::Level105 | Variant::Rigged281 | Variant::Patch299 | Variant::Dcm108 | Variant::Hlod108) {
         r.finish()?;
     }
     Ok(())
@@ -489,7 +649,10 @@ pub fn body(variant: Variant, h: &ModelHeader, b: &[u8], f: &[u8]) -> Result<Mod
     let (vertices_f, indices_f) = (h.vertex_count - h.vertex_count_b, h.index_count - h.index_count_b);
     let mut r = Reader::new(f);
     let rest = (|| {
-        vertices(&mut r, variant, vertices_f, &mut body)?;
+        vertices(&mut r, variant, h, vertices_f, &mut body)?;
+        if variant == Variant::Dcm108 {
+            r.skip(vertices_f as usize * EXTRA_108, "extra vertex data")?;
+        }
         indices(&mut r, indices_f, &mut body)?;
         // An F part holds nothing but the rest of the model.
         if vertices_f + indices_f > 0 { r.finish() } else { Ok(()) }
@@ -511,7 +674,13 @@ mod tests {
         assert_eq!(Variant::of(109, "/Lotus/Docs/Loadouts/0_c.fbx"), Some(Variant::Level109));
         assert_eq!(Variant::of(281, "/Lotus/Characters/Tenno/Excalibur/ExcaliburBody_skel.fbx"), Some(Variant::Rigged281));
         assert_eq!(Variant::of(105, "/Lotus/Levels/Backdrops/SaturnRegionShip/0_a.fbx"), Some(Variant::Level105));
-        for (type_id, path) in [(108, "/A/B_dcm.fbx"), (106, "/A/B_sm.fbx"), (299, "/A/B.fbx"), (166, "/A/T.terrain")] {
+        assert_eq!(Variant::of(299, "/Lotus/Fx/Corpus/Arachnoids/ArachnoidHungerWebPatchMesh"), Some(Variant::Patch299));
+        assert_eq!(Variant::of(108, "/Lotus/Characters/NewWar/NecramechRanged/NecramechRangedGlassArmL_dcm.fbx"), Some(Variant::Dcm108));
+        assert_eq!(Variant::of(108, "/Lotus/Levels/CivilianHubs/PoeRemaster/C0g0_hlod.fbx"), Some(Variant::Hlod108));
+        assert_eq!(Variant::of(108, "/EE/Types/GraphicsRes/LandscapeMesh"), None, "a plain 108 has another layout");
+        assert!(Variant::Patch299.has_weights() && !Variant::Patch299.is_rigged(), "patch meshes have weights but no skeleton");
+        assert_eq!(Variant::of(166, "/Lotus/Levels/1999/ConAlley64x128StraightRobezu/TerrainF.tmesh"), Some(Variant::Terrain166));
+        for (type_id, path) in [(106, "/A/B_sm.fbx"), (290, "/A/T.fbx")] {
             assert_eq!(Variant::of(type_id, path), None, "{type_id} {path}");
         }
     }
@@ -526,7 +695,7 @@ mod tests {
             data.extend_from_slice(&packed.to_le_bytes());
         }
         let mut body = ModelBody::default();
-        vertices(&mut Reader::new(&data), Variant::Rigged281, 3, &mut body).unwrap();
+        vertices(&mut Reader::new(&data), Variant::Rigged281, &ModelHeader::default(), 3, &mut body).unwrap();
         assert_eq!(body.bone_weights[0], [1.0, 0.0, 0.0, 0.0]);
         assert_eq!(body.bone_weights[1][3], 0.0);
         assert!((body.bone_weights[1][0] + body.bone_weights[1][1] - 1.0).abs() < 1e-6);
@@ -545,7 +714,7 @@ mod tests {
             packed.extend_from_slice(&half.to_le_bytes());
         }
         let mut body = ModelBody::default();
-        vertices(&mut Reader::new(&packed), Variant::Static102, 1, &mut body).unwrap();
+        vertices(&mut Reader::new(&packed), Variant::Static102, &ModelHeader::default(), 1, &mut body).unwrap();
         assert_eq!(body.positions[0][..3], [1.0, -1.0, 0.0]);
         assert_eq!((body.normals[0], body.tangents[0], body.occlusion[0]), ([255, 128, 0, 9], [1, 2, 3], 77));
         assert_eq!((body.uv0[0], body.uv1[0]), ([1.0, 0.5], [-1.0, 0.0]));
@@ -557,9 +726,39 @@ mod tests {
         }
         level.extend_from_slice(&packed[8..]);
         let mut body = ModelBody::default();
-        vertices(&mut Reader::new(&level), Variant::Level109, 1, &mut body).unwrap();
+        vertices(&mut Reader::new(&level), Variant::Level109, &ModelHeader::default(), 1, &mut body).unwrap();
         assert_eq!(body.positions[0], [1.5, -2.0, 300.0, 0.0]);
         assert_eq!(body.uv0[0], [1.0, 0.5]);
+    }
+
+    #[test]
+    fn attribute_lines_change_the_body() {
+        let mut h = ModelHeader::default();
+        h.apply_attributes("Materials={
+    A
+}
+CompactVertices=0
+ShadowCulling=0
+");
+        assert!(h.float_positions && !h.rigid_animation);
+        h.apply_attributes("SupportRigidAnimation=1
+");
+        assert!(!h.float_positions && h.rigid_animation);
+        h.apply_attributes("CompactVertices=1
+SupportRigidAnimation=0
+");
+        assert!(!h.float_positions && !h.rigid_animation);
+
+        // Uncompacted vertices hold float positions, as level vertices do.
+        let mut data = Vec::new();
+        for value in [1.5f32, -2.0, 30.0, 0.0] {
+            data.extend_from_slice(&value.to_le_bytes());
+        }
+        data.extend_from_slice(&[0; 16]);
+        let h = ModelHeader { float_positions: true, ..Default::default() };
+        let mut body = ModelBody::default();
+        vertices(&mut Reader::new(&data), Variant::Static102, &h, 1, &mut body).unwrap();
+        assert_eq!(body.positions[0], [1.5, -2.0, 30.0, 0.0]);
     }
 
     #[test]

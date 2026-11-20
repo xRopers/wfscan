@@ -10,8 +10,8 @@ use clap::{Parser, Subcommand};
 use serde::Serialize;
 use wfscan_core::output::{internal_path_under, write_atomic};
 use wfscan_core::{
-    AudioOutput, Cache, Classifier, ExportOptions, Exporters, FileEntry, FormatOptions, IndexOptions, Kind, Manifest, Oodle, OodleDecoder,
-    PackageInfo, Part, Status, TextureOutput, VorbisTables, diff, export, index, package_info, report,
+    AudioOutput, BinkLibrary, Cache, Classifier, ExportOptions, Exporters, FileEntry, FormatOptions, IndexOptions, Kind, Manifest, Oodle, OodleDecoder,
+    PackageInfo, Part, Status, TextureOutput, VideoOutput, VorbisTables, diff, export, index, package_info, report,
 };
 
 #[derive(Parser)]
@@ -30,6 +30,11 @@ struct Cli {
     /// another game or SDK works
     #[arg(long, global = true, value_name = "PATH")]
     oodle_dll: Option<PathBuf>,
+
+    /// Your own Bink 2 library (bink2w64.dll), for videos as PNG frames [default:
+    /// $WFSCAN_BINK_DLL, then the game's own Tools\Bink2ink2w64.dll next to the cache]
+    #[arg(long, global = true, value_name = "PATH")]
+    bink_dll: Option<PathBuf>,
 
     /// Read the cache even if another program (the game or its launcher) has it open for
     /// writing
@@ -140,6 +145,11 @@ enum Command {
         /// whichever the sound is) or wav (everything decoded to 16-bit PCM)
         #[arg(long, default_value_t, value_name = "FORMAT")]
         audio_format: AudioOutput,
+        /// What videos become: bk2 (exact: the Bink file as it is) or png (every frame as
+        /// a PNG in a folder named after the video, with a video.json giving the frame
+        /// rate; needs the Bink library, see --bink-dll)
+        #[arg(long, default_value_t, value_name = "FORMAT")]
+        video_format: VideoOutput,
         /// Also use the Vorbis header sets in this game executable (wfscan has the ones
         /// the game used in September 2026 built in; a later game may have more)
         #[arg(long, value_name = "PATH")]
@@ -230,10 +240,14 @@ fn run(cli: Cli) -> Result<()> {
             cmd_list(&manifest, &filter, cli.json)
         }
         Command::Raw { cache, path, package, dir } => cmd_raw(&open(&cache)?, &path, package.as_deref(), &dir, oodle, cli.json),
-        Command::Export { cache, manifest, dir, package, path, kinds, texture_format, audio_format, game_exe, changed_since, dry_run, force, raw_unsupported } => {
+        Command::Export { cache, manifest, dir, package, path, kinds, texture_format, audio_format, video_format, game_exe, changed_since, dry_run, force, raw_unsupported } => {
             let vorbis = game_exe.as_deref().map(vorbis_tables).transpose()?;
             let opts = ExportOptions { package, path, kinds, dry_run, force, raw_unsupported, files: None };
-            let exporters = Exporters::builtin(&FormatOptions { texture: texture_format, audio: audio_format, vorbis });
+            let bink = match video_format {
+                VideoOutput::Png => Some(Arc::new(load_bink(cli.bink_dll.as_deref(), &cache)?)),
+                VideoOutput::Bink => None,
+            };
+            let exporters = Exporters::builtin(&FormatOptions { texture: texture_format, audio: audio_format, vorbis, video: video_format, bink });
             let job =
                 ExportJob { manifest_path: &manifest, changed_since: changed_since.as_deref(), out_dir: &dir, opts: &opts, exporters: &exporters };
             cmd_export(&open(&cache)?, &job, oodle, cli.json)
@@ -242,8 +256,20 @@ fn run(cli: Cli) -> Result<()> {
         Command::Report { manifest, errors, unknown } => cmd_report(&manifest, errors, unknown, cli.json),
         Command::Mcp { cache, manifest } => {
             eprintln!("wfscan mcp: serving {} on stdin/stdout", cache.display());
-            mcp::Server::new(cache, manifest, oodle, cli.allow_in_use).serve(std::io::stdin().lock(), std::io::stdout().lock())
+            mcp::Server::new(cache, manifest, oodle, cli.bink_dll.clone(), cli.allow_in_use).serve(std::io::stdin().lock(), std::io::stdout().lock())
         }
+    }
+}
+
+/// The Bink library: the one given, else `$WFSCAN_BINK_DLL`, else the game's own next to
+/// the cache.
+pub fn load_bink(given: Option<&Path>, cache: &Path) -> Result<BinkLibrary> {
+    if given.is_some() || std::env::var_os(wfscan_core::formats::video::BINK_DLL_ENV).is_some_and(|v| !v.is_empty()) {
+        return BinkLibrary::load(given).map_err(|e| anyhow::anyhow!(e));
+    }
+    match BinkLibrary::next_to_cache(cache) {
+        Some(found) => BinkLibrary::load(Some(&found)).map_err(|e| anyhow::anyhow!(e)),
+        None => BinkLibrary::load(None).map_err(|e| anyhow::anyhow!(e)),
     }
 }
 

@@ -28,13 +28,13 @@
         },
         "H": {
           "compressed_size": 160,
-          "crc32": 3403495590,
+          "crc32": 1225133802,
           "size": 258
         }
       },
       "path": "/Lotus/Fx/Web/WebPatchMesh",
       "stale": false,
-      "type": 299
+      "type": 290
     },
     {
       "package": "Misc",
@@ -63,14 +63,14 @@
           "size": 800
         },
         "H": {
-          "compressed_size": 166,
-          "crc32": 2588328577,
-          "size": 263
+          "compressed_size": 164,
+          "crc32": 966445229,
+          "size": 261
         }
       },
-      "path": "/Lotus/Levels/Room/Far_hlod.fbx",
+      "path": "/Lotus/Levels/Room/Far_sm.fbx",
       "stale": false,
-      "type": 108
+      "type": 102
     },
     {
       "package": "Misc",

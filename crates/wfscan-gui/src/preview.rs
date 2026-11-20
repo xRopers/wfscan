@@ -8,7 +8,8 @@ use egui::{ColorImage, TextureHandle};
 use wfscan_core::formats::audio::{self, Pcm};
 use wfscan_core::formats::model::{self, Model, render::View};
 use wfscan_core::formats::texture::{self, Shape};
-use wfscan_core::{Cache, ExportError, ExportInput, Kind, Oodle, OodleDecoder, Part, with_input};
+use wfscan_core::formats::video;
+use wfscan_core::{BinkLibrary, Cache, ExportError, ExportInput, Kind, Oodle, OodleDecoder, Part, with_input};
 
 use crate::widgets::TextLines;
 
@@ -79,7 +80,15 @@ pub struct Previewer {
 
 impl Previewer {
     /// Load a file unless it is already shown or loading.
-    pub fn request(&mut self, key: Key, cache: Arc<Cache>, oodle: Option<Arc<Oodle>>, kind: Option<Kind>, wake: impl Fn() + Send + 'static) {
+    pub fn request(
+        &mut self,
+        key: Key,
+        cache: Arc<Cache>,
+        oodle: Option<Arc<Oodle>>,
+        bink: Option<Arc<BinkLibrary>>,
+        kind: Option<Kind>,
+        wake: impl Fn() + Send + 'static,
+    ) {
         if self.key.as_ref() == Some(&key) || self.pending.as_ref().is_some_and(|(k, _)| *k == key) {
             return;
         }
@@ -87,7 +96,7 @@ impl Previewer {
         let (package, path) = (key.package.clone(), key.path.clone());
         std::thread::spawn(move || {
             let decoder = oodle.as_deref().map(|o| o as &dyn OodleDecoder);
-            let loaded = with_input(&cache, &package, &path, decoder, |input| load(input, kind)).map_err(|e| e.to_string());
+            let loaded = with_input(&cache, &package, &path, decoder, |input| load(input, kind, bink.as_deref())).map_err(|e| e.to_string());
             let _ = tx.send(loaded);
             wake();
         });
@@ -132,7 +141,7 @@ fn reason(e: ExportError) -> String {
     }
 }
 
-fn load(input: &ExportInput, kind: Option<Kind>) -> Loaded {
+fn load(input: &ExportInput, kind: Option<Kind>, bink: Option<&BinkLibrary>) -> Loaded {
     let attributes = input.header.attributes.clone();
     let (summary, content) = match kind {
         Some(Kind::Texture) => match texture::read(input) {
@@ -170,6 +179,32 @@ fn load(input: &ExportInput, kind: Option<Kind>) -> Loaded {
                 (summary, Some(content))
             }
             Err(e) => ("sound".to_string(), Some(Err(reason(e)))),
+        },
+        Some(Kind::Video) => match video::bink::read(input) {
+            Ok((data, header)) => {
+                let summary = format!(
+                    "{}x{}, {} frames at {} fps ({}){}",
+                    header.width,
+                    header.height,
+                    header.frames,
+                    header.frame_rate(),
+                    clock(header.seconds()),
+                    if header.audio_tracks > 0 { format!(", {} sound tracks", header.audio_tracks) } else { String::new() }
+                );
+                let frame = match bink {
+                    None => Err("Set the Bink library (Tools > Bink library) to see the frames.".to_string()),
+                    Some(bink) => {
+                        let mut first = None;
+                        bink.frames(&data, &header, |_, rgba| {
+                            first = Some(ColorImage::from_rgba_unmultiplied([header.width as usize, header.height as usize], rgba));
+                            Ok(false)
+                        })
+                        .and_then(|()| first.map(Content::Texture).ok_or_else(|| "no frames".to_string()))
+                    }
+                };
+                (summary, Some(frame))
+            }
+            Err(e) => ("video".to_string(), Some(Err(reason(e)))),
         },
         other => {
             let what = other.map_or_else(|| format!("type {}", input.type_id()), |k| format!("{k} (type {})", input.type_id()));

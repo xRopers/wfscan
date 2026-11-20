@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use egui::{Align, Color32, ColorImage, Key, Layout, Modifiers, RichText, Sense, Ui, ViewportCommand};
 use egui_extras::{Column, TableBuilder};
 use wfscan_core::formats::model::render::render;
-use wfscan_core::{AudioOutput, FormatOptions, Kind, Part, Report, Status, TextureOutput, report};
+use wfscan_core::formats::video::BINK_DLL_ENV;
+use wfscan_core::{AudioOutput, BinkLibrary, FormatOptions, Kind, Part, Report, Status, TextureOutput, VideoOutput, report};
 
 use crate::jobs::{Jobs, finish};
 use crate::player::Player;
@@ -168,6 +169,10 @@ pub struct App {
     settings_path: Option<PathBuf>,
     /// The Oodle library path being edited in the Oodle window.
     pub oodle_dll_text: String,
+    pub show_bink: bool,
+    /// The Bink library path being edited in the Bink window.
+    pub bink_dll_text: String,
+    pub video_format: VideoOutput,
 }
 
 impl App {
@@ -206,6 +211,9 @@ impl App {
             settings: Settings::default(),
             settings_path: None,
             oodle_dll_text: String::new(),
+            show_bink: false,
+            bink_dll_text: String::new(),
+            video_format: VideoOutput::Bink,
         }
     }
 
@@ -217,6 +225,37 @@ impl App {
         let dll = oodle_dll.or_else(|| self.settings.oodle_dll.clone());
         self.oodle_dll_text = dll.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
         self.session.set_oodle(dll.as_deref());
+        // The Bink library: the saved one, else the environment's, else (once a cache is
+        // open) the game's own.
+        self.bink_dll_text = self.settings.bink_dll.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+        if self.settings.bink_dll.is_some() || std::env::var_os(BINK_DLL_ENV).is_some() {
+            let saved = self.settings.bink_dll.clone();
+            self.session.set_bink(saved.as_deref());
+        }
+    }
+
+    /// Use the Bink library typed in the Bink window (empty: `WFSCAN_BINK_DLL`, else the
+    /// game's own next to the open cache), and remember it.
+    pub fn apply_bink_dll(&mut self) {
+        let text = self.bink_dll_text.trim();
+        let dll = (!text.is_empty()).then(|| PathBuf::from(text));
+        let found = self.session.loaded.as_ref().and_then(|l| BinkLibrary::next_to_cache(&l.cache.dir));
+        let use_path = dll.clone().or(if std::env::var_os(BINK_DLL_ENV).is_some() { None } else { found });
+        self.session.set_bink(use_path.as_deref());
+        match (&self.session.bink, &self.session.bink_error) {
+            (Some(bink), _) => {
+                let text = format!("Bink: using {}", bink.path().display());
+                self.session.info(text);
+            }
+            (None, Some(e)) => {
+                let text = format!("Bink: {e}");
+                self.session.error(text);
+            }
+            (None, None) => {}
+        }
+        self.settings.bink_dll = dll;
+        self.save_settings();
+        self.preview.clear();
     }
 
     fn save_settings(&mut self) {
@@ -284,7 +323,13 @@ impl App {
         let Some(loaded) = &self.session.loaded else { return };
         let (cache, manifest) = (loaded.cache.clone(), loaded.manifest.clone());
         let oodle = self.session.oodle.clone();
-        let formats = FormatOptions { texture: self.texture_format, audio: self.audio_format, vorbis: None };
+        let formats = FormatOptions {
+            texture: self.texture_format,
+            audio: self.audio_format,
+            vorbis: None,
+            video: self.video_format,
+            bink: self.session.bink.clone(),
+        };
         let raw_unsupported = self.raw_unsupported;
         self.settings.export_dir = Some(dir.clone());
         self.save_settings();
@@ -568,6 +613,7 @@ impl App {
         egui::CentralPanel::default().show(ui, |ui| self.central(ui));
 
         self.oodle_window();
+        self.bink_window();
         self.coverage_window();
         self.log_window();
         if self.jobs.busy() || self.preview.loading() {
@@ -680,6 +726,13 @@ impl App {
             ui.radio_value(&mut self.audio_format, AudioOutput::Native, "Ogg Vorbis, Opus or WAV (exact)");
             ui.radio_value(&mut self.audio_format, AudioOutput::Wav, "WAV (decoded, larger)");
             ui.separator();
+            ui.label("Videos as");
+            ui.radio_value(&mut self.video_format, VideoOutput::Bink, "Bink .bk2 (exact)");
+            ui.add_enabled_ui(self.session.bink.is_some(), |ui| {
+                ui.radio_value(&mut self.video_format, VideoOutput::Png, "PNG frames (decoded, much larger)")
+                    .on_disabled_hover_text("Needs the Bink library: Tools > Bink library");
+            });
+            ui.separator();
             ui.checkbox(&mut self.raw_unsupported, "Unsupported files as raw parts").on_hover_text(
                 "Files wfscan can't convert yet are written as their decompressed parts (name.H, name.B, name.F). They still count as unsupported.",
             );
@@ -688,6 +741,10 @@ impl App {
             if ui.button("Oodle library…").clicked() {
                 ui.close();
                 self.show_oodle = true;
+            }
+            if ui.button("Bink library…").on_hover_text("For video frames: the game's Tools/Bink2/bink2w64.dll").clicked() {
+                ui.close();
+                self.show_bink = true;
             }
             if ui.add_enabled(open, egui::Button::new("Coverage…")).on_hover_text("How many files of each type there are, and how their exports ended").clicked() {
                 ui.close();
@@ -1128,7 +1185,7 @@ impl App {
 
         let key = preview::Key { package: file.package.clone(), path: file.path.clone(), generation: self.session.generation };
         let ctx = ui.ctx().clone();
-        self.preview.request(key.clone(), loaded.cache.clone(), self.session.oodle.clone(), kind, move || ctx.request_repaint());
+        self.preview.request(key.clone(), loaded.cache.clone(), self.session.oodle.clone(), self.session.bink.clone(), kind, move || ctx.request_repaint());
         let mut sound = None;
         if self.preview.key.as_ref() != Some(&key) {
             ui.horizontal(|ui| {
@@ -1181,6 +1238,36 @@ impl App {
         self.show_oodle = open;
         if apply {
             self.apply_oodle_dll();
+        }
+    }
+
+    fn bink_window(&mut self) {
+        let mut open = self.show_bink;
+        let mut apply = false;
+        egui::Window::new("Bink library").open(&mut open).resizable(false).show(&self.ctx.clone(), |ui| {
+            ui.label("Warframe's videos are Bink 2 files. They export as .bk2 without help; to show their frames or");
+            ui.label("export them as PNG, wfscan uses the game's own Bink library, which it finds next to the cache.");
+            ui.label("To use another copy, point at a bink2w64.dll:");
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.bink_dll_text).hint_text("empty: the game's Tools/Bink2/bink2w64.dll").desired_width(420.0));
+                if ui.button("Browse…").clicked()
+                    && let Some(path) = rfd::FileDialog::new().set_title("Choose bink2w64.dll").pick_file()
+                {
+                    self.bink_dll_text = path.display().to_string();
+                }
+            });
+            apply = ui.add_enabled(!self.jobs.busy(), egui::Button::new("Apply")).clicked();
+            ui.separator();
+            match (&self.session.bink, &self.session.bink_error) {
+                (Some(bink), _) => ui.label(format!("Using {}", bink.path().display())),
+                (None, Some(error)) => ui.add(egui::Label::new(RichText::new(error).color(ui.visuals().error_fg_color)).wrap()),
+                (None, None) if self.session.loaded.is_some() => ui.weak("The game's own wasn't found next to this cache: point at a bink2w64.dll."),
+                (None, None) => ui.weak("Not set yet: open a cache to find the game's own."),
+            };
+        });
+        self.show_bink = open;
+        if apply {
+            self.apply_bink_dll();
         }
     }
 

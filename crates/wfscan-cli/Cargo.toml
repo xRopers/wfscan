@@ -11,10 +11,11 @@ name = "wfscan"
 path = "src/main.rs"
 
 [features]
-default = ["oodle", "png", "audio"]
+default = ["oodle", "png", "audio", "bink"]
 oodle = ["wfscan-core/oodle"]
 png = ["wfscan-core/png"]
 audio = ["wfscan-core/audio"]
+bink = ["wfscan-core/bink"]
 
 [dependencies]
 anyhow.workspace = true

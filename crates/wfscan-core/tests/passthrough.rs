@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use wfscan_core::{Cache, ExportOptions, Exporters, FormatOptions, IndexOptions, Kind, Manifest, Status, export, index};
+use wfscan_core::{BinkLibrary, Cache, ExportOptions, Exporters, FormatOptions, IndexOptions, Kind, Manifest, Status, VideoOutput, export, index};
 use wfscan_fixtures::{self as fx, pt};
 
 fn exported() -> (tempfile::TempDir, Manifest, wfscan_core::ExportStats) {
@@ -49,7 +49,7 @@ fn each_kind_is_copied_out_or_says_why_not() {
 
     // Videos: F as it is, whichever Bink version; a cut-short one fails with both sizes.
     let video = record(pt::VIDEO);
-    assert_eq!((video.status, video.exporter.as_deref(), video.outputs.clone()), (Status::Ok, Some("video@1"), vec![pt::VIDEO.to_string()]));
+    assert_eq!((video.status, video.exporter.as_deref(), video.outputs.clone()), (Status::Ok, Some("video-bk2@1"), vec![pt::VIDEO.to_string()]));
     assert_eq!(out(pt::VIDEO), fixture_part(pt::VIDEO, 2));
     let streamed = record(pt::VIDEO_STREAMED);
     assert_eq!(streamed.outputs, ["/Lotus/Interface/AbilityVideos/Power1_s.bik"], "a Bink 1 file is named .bik");
@@ -110,4 +110,67 @@ fn real_passthrough_files_all_check_out() {
         }
         assert!(stats.selected > 0 && stats.failed == 0, "{kind}: {stats:?}");
     }
+}
+
+/// Videos as PNG frames need the Bink library; without it they are unsupported, and say
+/// where the game keeps one.
+#[test]
+fn video_frames_without_the_bink_library_say_why() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Cache.Windows");
+    fx::passthrough().write(&dir).unwrap();
+    let cache = Cache::open(&dir).unwrap();
+    let (mut manifest, _) = index(&cache, None, &IndexOptions::default()).unwrap();
+    let exporters = Exporters::builtin(&FormatOptions { video: VideoOutput::Png, ..Default::default() });
+    let opts = ExportOptions { kinds: vec![Kind::Video], ..Default::default() };
+    let stats = export(&cache, &mut manifest, None, &exporters, None, &tmp.path().join("out"), &opts).unwrap();
+    assert_eq!((stats.selected, stats.unsupported, stats.failed), (3, 2, 1), "{stats:?}");
+    let video = manifest.files.iter().find(|f| f.path == pt::VIDEO).unwrap().export.clone().unwrap();
+    assert_eq!((video.status, video.exporter.as_deref()), (Status::Unsupported, Some("video-png@1")));
+    assert!(video.reason.as_deref().unwrap().contains("Tools\\Bink2\\bink2w64.dll"), "{video:?}");
+    // A cut-short file still fails on its header, before any library is needed.
+    let short = manifest.files.iter().find(|f| f.path == pt::VIDEO_SHORT).unwrap().export.clone().unwrap();
+    assert_eq!(short.status, Status::Failed);
+}
+
+/// A few real videos decoded to PNG frames with the game's own Bink library: every frame
+/// is written, at the size and count the file's header gives. Needs `WFSCAN_CACHE_DIR`,
+/// `WFSCAN_OODLE_DLL` and the game's `Tools\Bink2\bink2w64.dll` next to the cache.
+#[test]
+fn real_videos_decode_to_frames() {
+    let (Some(dir), Ok(oodle)) = (std::env::var_os("WFSCAN_CACHE_DIR"), wfscan_core::Oodle::load(None)) else {
+        eprintln!("skipped: set WFSCAN_CACHE_DIR and WFSCAN_OODLE_DLL");
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let Some(dll) = BinkLibrary::next_to_cache(&dir) else {
+        eprintln!("skipped: no Tools\\Bink2\\bink2w64.dll next to the cache");
+        return;
+    };
+    let bink = std::sync::Arc::new(BinkLibrary::load(Some(&dll)).unwrap());
+    let cache = Cache::open(&dir).unwrap();
+    let (mut manifest, _) = index(&cache, Some(&oodle), &IndexOptions::default()).unwrap();
+    let exporters = Exporters::builtin(&FormatOptions { video: VideoOutput::Png, bink: Some(bink), ..Default::default() });
+    let out = tempfile::tempdir().unwrap();
+    let opts = ExportOptions { path: Some("/Lotus/Interface/AbilityVideos/A".into()), kinds: vec![Kind::Video], ..Default::default() };
+    let stats = export(&cache, &mut manifest, None, &exporters, Some(&oodle), out.path(), &opts).unwrap();
+    eprintln!("{stats:?}");
+    assert!(stats.selected >= 2 && stats.ok == stats.selected, "{stats:?}");
+    for file in manifest.files.iter().filter(|f| f.export.as_ref().is_some_and(|e| e.status == Status::Ok)) {
+        let record = file.export.as_ref().unwrap();
+        let folder = wfscan_core::formats::video::frames_folder(&file.path);
+        let on_disk = |internal: &str| out.path().join(internal.trim_start_matches('/'));
+        let info: serde_json::Value = serde_json::from_slice(&std::fs::read(on_disk(&format!("{folder}/video.json"))).unwrap()).unwrap();
+        let frames = info["frames"].as_u64().unwrap() as usize;
+        assert_eq!(record.outputs.len(), frames + 1, "{}: one PNG per frame and the JSON", file.path);
+        let last = std::fs::read(on_disk(&format!("{folder}/{:05}.png", frames - 1))).unwrap();
+        let image = texscan_core_png_size(&last);
+        assert_eq!(image, (info["width"].as_u64().unwrap() as u32, info["height"].as_u64().unwrap() as u32), "{}", file.path);
+    }
+}
+
+/// Width and height from a PNG's IHDR.
+fn texscan_core_png_size(png: &[u8]) -> (u32, u32) {
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    (u32::from_be_bytes(png[16..20].try_into().unwrap()), u32::from_be_bytes(png[20..24].try_into().unwrap()))
 }

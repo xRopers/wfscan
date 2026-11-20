@@ -4,10 +4,7 @@
 //!
 //! Where the facts come from (all from the November 2026 cache, looked at with
 //! `wfscan mcp`; none of these types are exported by Warframe-Exporter):
-//! - **Video** (`VideoTexture*` packages, type 170, 231 `.bk2` files): F is a whole Bink
-//!   file. It starts with `KB2` (Bink 2; `BIK` is Bink 1), and the little-endian u32 at
-//!   offset 4 is the file's size minus 8, which matches F exactly. The H part's own
-//!   header (dimensions, presumably) isn't needed.
+//! - Videos used to be here; they have their own exporter now (`formats::video`).
 //! - **Flash** (`AnimRetarget` 9, `Misc` 10, 508 `.swf` files): B is a whole SWF. `FWS`
 //!   is an uncompressed SWF whose u32 at offset 4 is the file's length; `CWS` (zlib) and
 //!   `ZWS` (LZMA) store the uncompressed length there instead, so only the magic is checked.
@@ -34,7 +31,7 @@ pub struct PassthroughExporter {
 
 impl PassthroughExporter {
     /// The kinds this exporter handles.
-    pub const KINDS: [Kind; 4] = [Kind::Video, Kind::Flash, Kind::Script, Kind::SoundBank];
+    pub const KINDS: [Kind; 3] = [Kind::Flash, Kind::Script, Kind::SoundBank];
 }
 
 impl Exporter for PassthroughExporter {
@@ -52,10 +49,6 @@ impl Exporter for PassthroughExporter {
 
     fn export(&self, input: &ExportInput) -> Result<Vec<Output>, ExportError> {
         let (data, extension, known): (Vec<u8>, &str, &[&str]) = match self.kind {
-            Kind::Video => {
-                let (data, magic) = bink(input)?;
-                (data, if magic == *b"BIK" { "bik" } else { "bk2" }, &["bk2", "bik"])
-            }
             Kind::Flash => (swf(input)?, "swf", &["swf"]),
             Kind::Script => (script(input)?, "luac", &["lua", "luac"]),
             Kind::SoundBank => {
@@ -91,30 +84,6 @@ pub fn output_path(path: &str, extension: &str, known: &[&str]) -> String {
 
 fn u32_at(data: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes(data.get(offset..offset + 4)?.try_into().ok()?))
-}
-
-/// The part holding a whole Bink file (F, else B), and its magic.
-fn bink(input: &ExportInput) -> Result<(Vec<u8>, [u8; 3]), ExportError> {
-    for part in [Part::F, Part::B] {
-        if !input.has(part) {
-            continue;
-        }
-        let data = input.read(part)?;
-        let magic: [u8; 3] = match data.get(..3) {
-            Some(m) if m == b"KB2" || m == b"BIK" => m.try_into().expect("three bytes"),
-            _ => continue,
-        };
-        let stated = u32_at(&data, 4).map(|n| n as usize + 8);
-        if stated != Some(data.len()) {
-            return Err(ExportError::failed(format!(
-                "{part}: the Bink header says {} bytes, the part holds {}",
-                stated.map_or_else(|| "?".to_string(), |n| n.to_string()),
-                data.len()
-            )));
-        }
-        return Ok((data, magic));
-    }
-    Err(ExportError::unsupported("no Bink data (KB2 or BIK) in B or F"))
 }
 
 fn swf(input: &ExportInput) -> Result<Vec<u8>, ExportError> {

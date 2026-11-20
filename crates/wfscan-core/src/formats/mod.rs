@@ -7,6 +7,7 @@ pub mod model;
 pub mod passthrough;
 pub mod reader;
 pub mod texture;
+pub mod video;
 
 use crate::export::Exporters;
 
@@ -17,6 +18,9 @@ pub struct FormatOptions {
     pub audio: audio::AudioOutput,
     /// Vorbis header sets to use instead of the bundled ones.
     pub vorbis: Option<std::sync::Arc<audio::VorbisTables>>,
+    pub video: video::VideoOutput,
+    /// The user's Bink library, for videos as PNG frames.
+    pub bink: Option<std::sync::Arc<video::BinkLibrary>>,
 }
 
 impl Exporters {
@@ -25,7 +29,8 @@ impl Exporters {
         let exporters = Self::default()
             .with(texture::TextureExporter { output: options.texture })
             .with(model::ModelExporter)
-            .with(audio::AudioExporter { output: options.audio, vorbis: options.vorbis.clone() });
+            .with(audio::AudioExporter { output: options.audio, vorbis: options.vorbis.clone() })
+            .with(video::VideoExporter { output: options.video, bink: options.bink.clone() });
         passthrough::PassthroughExporter::KINDS.into_iter().fold(exporters, |all, kind| all.with(passthrough::PassthroughExporter { kind }))
     }
 }

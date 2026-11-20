@@ -12,6 +12,10 @@ pub struct Settings {
     /// The user's oo2core library. `None` falls back to `WFSCAN_OODLE_DLL`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oodle_dll: Option<PathBuf>,
+    /// The user's Bink 2 library, for video frames. `None`: `WFSCAN_BINK_DLL`, else the
+    /// game's own next to the cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bink_dll: Option<PathBuf>,
     /// The cache folder opened last.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_dir: Option<PathBuf>,
@@ -56,7 +60,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sub").join("gui.json");
         assert_eq!(Settings::load(&path), Settings::default());
-        let s = Settings { oodle_dll: Some(PathBuf::from("C:/games/x/oo2core_9_win64.dll")), cache_dir: Some("D:/Warframe/Cache.Windows".into()), export_dir: None };
+        let s = Settings {
+            oodle_dll: Some(PathBuf::from("C:/games/x/oo2core_9_win64.dll")),
+            bink_dll: Some(PathBuf::from("D:/Warframe/Tools/Bink2/bink2w64.dll")),
+            cache_dir: Some("D:/Warframe/Cache.Windows".into()),
+            export_dir: None,
+        };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
         fs::write(&path, "not json").unwrap();

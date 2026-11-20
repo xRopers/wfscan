@@ -824,7 +824,7 @@ pub mod mdl {
     pub const RIGGED: &str = "/Lotus/Characters/Hero/Hero_skel.fbx";
     pub const COLLISION: &str = "/Lotus/Objects/Crate/CrateCollision.fbx";
     pub const OTHER_TYPE: &str = "/Lotus/Fx/Web/WebPatchMesh";
-    pub const OTHER_NAME: &str = "/Lotus/Levels/Room/Far_hlod.fbx";
+    pub const OTHER_NAME: &str = "/Lotus/Levels/Room/Far_sm.fbx";
     pub const SHORT: &str = "/Lotus/Objects/Crate/CrateBroken.fbx";
 }
 
@@ -838,8 +838,8 @@ pub fn models() -> Fixture {
         model_file(mdl::LEVEL, 109, model_level()),
         model_file(mdl::RIGGED, 281, model_rigged()),
         model_file(mdl::COLLISION, 102, model_static(false)),
-        simple_file(mdl::OTHER_TYPE, 299, 70),
-        simple_file(mdl::OTHER_NAME, 108, 72),
+        simple_file(mdl::OTHER_TYPE, 290, 70),
+        simple_file(mdl::OTHER_NAME, 102, 72),
         model_file(mdl::SHORT, 102, short),
     ];
     Fixture { name: "models", packages: vec![FxPackage { name: "Misc".into(), parts: "HBF", files }] }

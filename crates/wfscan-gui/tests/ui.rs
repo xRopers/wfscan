@@ -107,7 +107,7 @@ fn a_model_and_a_file_without_a_reader() {
     h.get_by_label_contains("Drag to turn");
 
     select(&mut h, mdl::OTHER_TYPE);
-    wait_for(&mut h, "no reader for model type 299");
+    wait_for(&mut h, "no reader for model type 290");
     select(&mut h, mdl::COLLISION);
     wait_for(&mut h, "collision data only");
 }
@@ -484,6 +484,32 @@ fn unsupported_files_can_go_out_as_raw_parts() {
     assert_eq!((stats.unsupported, stats.raw), (1, 1));
     assert!(out.join("Lotus").join("Fx").join("Web").join("WebPatchMesh.H").is_file());
     assert!(h.state().session.log.last().unwrap().text.contains("1 unsupported (1 written raw)"));
+}
+
+#[test]
+fn the_bink_window_says_where_videos_get_their_library() {
+    let input = common::input();
+    let mut h = harness();
+    // Before a cache is open, it says one will be looked for.
+    h.state_mut().show_bink = true;
+    h.run_steps(2);
+    if std::env::var_os("WFSCAN_BINK_DLL").is_none() {
+        h.get_by_label_contains("open a cache to find the game's own");
+    }
+    // A fixture cache has no game folder around it.
+    open(&mut h, &input);
+    h.run_steps(2);
+    if std::env::var_os("WFSCAN_BINK_DLL").is_none() {
+        h.get_by_label_contains("wasn't found next to this cache");
+        assert!(h.state().session.bink.is_none());
+    }
+    // A wrong path is reported, in the window and the log.
+    h.state_mut().bink_dll_text = "no/such/bink2w64.dll".into();
+    h.run_steps(1);
+    h.get_by_label("Apply").click();
+    h.run_steps(2);
+    assert!(h.query_all_by_label_contains("not found").next().is_some());
+    assert!(h.state().session.log.last().unwrap().text.starts_with("Bink: "));
 }
 
 #[test]

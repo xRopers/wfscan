@@ -26,6 +26,7 @@ pub use error::{Error, Result};
 pub use formats::FormatOptions;
 pub use formats::audio::{AudioOutput, VorbisTables};
 pub use formats::texture::TextureOutput;
+pub use formats::video::{BinkLibrary, VideoOutput};
 pub use export::{ExportError, ExportInput, ExportOptions, ExportStats, Exporter, Exporters, Output, RAW_EXPORTER, export, with_input};
 pub use index::{IndexOptions, IndexStats, index, package_info};
 pub use manifest::{

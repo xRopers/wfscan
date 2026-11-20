@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use wfscan_core::{
-    Cache, Category, ExportOptions, ExportStats, Exporters, FileEntry, FormatOptions, IndexOptions, IndexStats, Kind, Manifest, Oodle,
+    BinkLibrary, Cache, Category, ExportOptions, ExportStats, Exporters, FileEntry, FormatOptions, IndexOptions, IndexStats, Kind, Manifest, Oodle,
     OodleDecoder, Part, Status, export, index,
 };
 use wfscan_core::output::write_atomic;
@@ -62,6 +62,9 @@ pub struct Session {
     /// The Oodle library in use, or why there is none.
     pub oodle: Option<Arc<Oodle>>,
     pub oodle_error: Option<String>,
+    /// The Bink library in use (for video frames), or why there is none.
+    pub bink: Option<Arc<BinkLibrary>>,
+    pub bink_error: Option<String>,
     /// Goes up whenever the file list or its statuses change, so views know to refresh.
     pub generation: u64,
     pub last_export: Option<(ExportStats, PathBuf)>,
@@ -90,7 +93,30 @@ impl Session {
         }
     }
 
+    /// Load the Bink library at `path`, or the one the environment names.
+    pub fn set_bink(&mut self, path: Option<&Path>) {
+        match BinkLibrary::load(path) {
+            Ok(bink) => {
+                self.bink = Some(Arc::new(bink));
+                self.bink_error = None;
+            }
+            Err(e) => {
+                self.bink = None;
+                self.bink_error = Some(e);
+            }
+        }
+    }
+
     pub fn set_loaded(&mut self, loaded: Loaded) {
+        // Without a Bink library set, use the game's own if it is next to the cache.
+        if self.bink.is_none()
+            && let Some(found) = BinkLibrary::next_to_cache(&loaded.cache.dir)
+        {
+            self.set_bink(Some(&found));
+            if self.bink.is_some() {
+                self.info(format!("Bink: using the game's {}", found.display()));
+            }
+        }
         let s = &loaded.stats;
         self.info(format!(
             "opened {}: {}, {} packages, {} files in {:.1} s",

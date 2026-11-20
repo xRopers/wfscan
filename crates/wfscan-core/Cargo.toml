@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["oodle", "png", "audio"]
+default = ["oodle", "png", "audio", "bink"]
 # Oodle blocks, decoded by the user's own oo2core library loaded at run time (through
 # zscan-core). Never bundled. Almost every block in a current cache is Oodle, so a build
 # without this can only read TOCs, stored entries and LZF blocks.
@@ -16,11 +16,15 @@ oodle = ["dep:zscan-core"]
 # texscan-core includes basisu (Apache-2.0 only), which makes binaries effectively GPL-3.
 # BC6H textures go out as Radiance .hdr instead, decoded to floats by bcdec_rs (MIT; the
 # same version texscan-core uses).
-png = ["dep:texscan-core", "dep:bcdec_rs"]
+png = ["dep:texscan-core", "dep:bcdec_rs", "dep:png"]
 # Decoding sounds to PCM, for WAV export and the GUI's player: Vorbis with lewton (MIT or
 # Apache-2.0), Opus with ropus (BSD-3-Clause), both pure Rust. Without it sounds still
 # export in their own formats, but Vorbis header sets are picked without a trial decode.
 audio = ["dep:lewton", "dep:ropus"]
+# Decoding Bink 2 videos to frames, through the user's own bink2w64.dll (the game ships
+# one in its Tools\Bink2 folder), loaded at run time with libloading (ISC). Never bundled.
+# Without it videos still export as .bk2.
+bink = ["dep:libloading"]
 
 [dependencies]
 crc32fast.workspace = true
@@ -31,6 +35,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 bcdec_rs = { version = "0.2", optional = true }
 lewton = { version = "0.10", optional = true }
+libloading = { version = "0.8", optional = true }
+# Video frames are written with fast compression and without alpha (MIT or Apache-2.0;
+# the version texscan-core uses).
+png = { version = "0.18", optional = true }
 ropus = { version = "0.12", optional = true }
 texscan-core = { workspace = true, optional = true }
 zscan-core = { workspace = true, optional = true }

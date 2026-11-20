@@ -21,7 +21,7 @@ One `passthrough` exporter (`crates/wfscan-core/src/formats/passthrough.rs`) wit
 
 | Type (package) | Kind | Files | Output | Result on the real cache |
 |---|---|---:|---|---|
-| 170 (VideoTexture, VideoTextureStreaming) | video | 238 | F as it is: `.bk2` (or `.bik` for Bink 1), after checking the magic and that the size in its header matches | 238 ok, 808 MiB. Original issue 47 |
+| 170 (VideoTexture, VideoTextureStreaming) | video | 238 | F as it is: `.bk2` (or `.bik` for Bink 1), after checking the magic and that the size in its header matches; or, with `--video-format png`, every frame as a PNG through the game's own `bink2w64.dll` | 238 ok, 808 MiB as `.bk2`; 83,576 frames (57 GiB) as PNG. Original issue 47 |
 | 9 (AnimRetarget), 10 (Misc) | flash | 508 | B as it is, `.swf`, after checking `FWS`/`CWS`/`ZWS` (and the length for `FWS`) | 508 ok, 14 MiB |
 | 110, 120 (Font) | script | 5,478 | B as it is, `.luac`, after walking its string table | 5,478 ok, 55 MiB. Luau-like bytecode, not decompiled |
 | 6 (Misc) | sound-bank | 44,417 | The attribute text, `.txt` | 43,091 ok. 1,296 are empty 32-byte stubs and 30 carry data in B (animation blend sets, not banks): both stay unsupported, with that reason |
@@ -48,6 +48,11 @@ Done (November 2026):
 |---|---:|---|
 | Texture pixel formats 31 and 33 | 977 | 31 is `R8G8B8A8_UINT` (933 lightmap indirection volumes, `_vi.raw`, whose texels count through tile coordinates); 33 is `R10G10B10A2_UNORM` (44 film-look LUTs, 33x33x33). Both are 4 bytes a texel, so the existing volume logic places them. A LUT slice exported as PNG shows the expected red/green ramps. Textures are now 129,700 of 129,701 ok |
 | Model type 105, plain form | 1,222 | The level (109) header with 102's B counts, and 102's packed vertices split between B and F (`Level105`). B and F are exactly 24 bytes a vertex and 2 an index in every file. All 1,222 ok; a Corpus hangar's `0_a.fbx` drew as a catwalk with its struts, beside the room's `0_c.fbx` wall panels |
+| Model type 299 (patch meshes) | 207 | Copies of other meshes scattered over a grid and baked into one (grass, webbing). 281's header with the patch list (source meshes, seeds and variances, matching the `PatchInfo` attribute text) and the grid before the physics reference; 32-byte weighted vertices, one "bone" per grid cell, but already placed, so they export as plain meshes. All 207 read exactly; webbing and grass patches drew as scattered clumps |
+| Model type 108 (`_dcm` and `_hlod`) | 1,433 | Not landscape meshes: 1,433 of the 1,434 are `_dcm` (Necramech parts) and `_hlod` (distant-view buildings) models. 102's header up to the mesh list; `_dcm` vertices carry 8 more bytes each, `_hlod` headers name their HLOD material (`*_hlod.hlm`, put on the glTF material). All 1,433 read exactly; a Cetus HLOD drew as the building, a `_dcm` vial as a clean capsule |
+| Model type 166 (terrain) | 1,700 | Layout from the original's description of its type 159 reader (two strings, the scale vectors, a u64 index count, the mesh list, PhysX list), plus what it leaves out: an error list ends the header, and 15 bytes per vertex (heightfield-like samples) follow the indices. B starts with the PhysX heightfield (`NXS` `HFHF`); vertices are 16 bytes with half-float positions. UVs are projected flat over the grid (the file has none). 1,700 of 1,704 read exactly; an ice-planet terrain seen from above is one continuous surface with cut-outs for the level |
+| Static model failures | 9 | Two attribute lines change the body: `CompactVertices=0` means float positions in units (32-byte vertices, 3 files), `SupportRigidAnimation=1` adds 48 bytes per mesh before the vertices (6 files). Each line occurs in exactly the failing files. A Grineer knife draws cleanly with the 48 bytes before the vertices and smeared with them after |
+| Rigged models with long morph tables | 2 | A sanity limit was too low (38 entries, 30 allowed) |
 | BC6H textures as `.hdr` | (were clamped) | With `--texture-format png`, BC6H textures go out as Radiance `.hdr` (one per face, layer or slice), decoded to floats with `bcdec_rs`, so values above 1 survive. An editor IBL cube has values up to 2.6, and its +Y face is the sky and -Y the floor. The PNG exporter is now `texture-png@2`, so earlier PNG exports are redone |
 
 Still to do:
@@ -55,16 +60,15 @@ Still to do:
 | What | Files | Notes |
 |---|---:|---|
 | Texture pixel format 32 | 1 | One GI volume, 4 bytes a texel. Reads plausibly as both R11G11B10 floats and RGB9E5, so left unsupported rather than guessed |
-| Model type 108 (landscape meshes) | 1,434 | Header diverges from every known layout right after the first 0x30 bytes |
-| Model type 166 (`.tmesh` terrain) | 1,704 | A format of its own: a 65x65 grid, a size (60x60), LOD ranges and a 15-node quadtree in H; heights and indices in B. Ties in with the landscapes in phase 6 |
-| Model type 299 (web and patch meshes) | 207 | Header diverges from every known layout |
-| Model failures | 55 | 46 rigged (extra data in B, or indices that don't fit), 9 static (8 more bytes per B vertex) |
+| Model type 108, plain | 1 | `/EE/Types/GraphicsRes/LandscapeMesh`, another layout |
+| Terrain with extra edge data | 5 | Four terrains of `QuestsGaraSayaStart` and one of the Photobooth's Onkos Cave have 2 to 4 x 1,548 bytes more (1,548 = 12 x 129, the grid's edge). Left failing until it's understood |
+| Rigged model failures | 44 | B has a few hundred to 15,000 bytes left over that follow neither the vertex nor the bone counts, or the indices run past B (cloth, snakes, plumes: likely extra per-mesh or morph data). Neither attribute line explains them |
 | Collision-only models | 2,323 | Nothing to draw today. Could go out as a `.glb` of the collision hulls, as an option; needs PhysX's cooked mesh format |
 | Vertex colours (`.vc`, Misc 118) | 3,284 | Original issue 10. Per-vertex data for a model, so it needs phase 0's file lookup to find the model it belongs to |
 
 Moved to phase 3: `_hlod.hlm` (Misc 218, 1,229, and one in 216) are HLOD **materials** (shader sources, then `_hd.png` / `.hlpm` texture names, all in H), not meshes; Misc 212 (35, `BuildDepthMipsMaterial` and the like) look like materials too.
 
-Gained so far: **2,199 files** (976 textures, the rest models). A full dry run: 319,885 ok, 55 failed, 127,316 unsupported (447,256 files).
+Gained so far: **5,549 files** (976 textures, 4,573 models). A full dry run: 323,235 ok, 49 failed, 123,972 unsupported (447,256 files). Models are 55,343 of 57,720: the rest are 2,323 collision-only, 44 rigged and 5 terrain failures, and a handful of types with no reader.
 
 ## Phase 3: materials
 
@@ -142,7 +146,7 @@ Small types with little to view: fonts and font caches (Font 36, Misc 34, 273, 2
 | Phase | Files it would cover (approx.) | Cumulative share of today's unsupported |
 |---|---:|---:|
 | 1. Passthrough and text (done) | 49,315 | 28% |
-| 2. Gaps in textures and models (2,199 done) | 12,500 | 36% |
+| 2. Gaps in textures and models (5,549 done) | 12,500 | 36% |
 | 3. Materials | 38,800 | 58% |
 | 4. Shaders (binary) | 12,500 | 65% |
 | 5. Animation | 31,600 | 82% |

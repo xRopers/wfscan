@@ -25,7 +25,8 @@ pub fn read(input: &ExportInput) -> Result<Model, ExportError> {
     }
     let variant = Variant::of(input.type_id(), input.path)
         .ok_or_else(|| ExportError::unsupported(format!("no reader for model type {} with this name yet", input.type_id())))?;
-    let header = raw::header(variant, input.h_body()).map_err(|e| ExportError::failed(format!("header: {e}")))?;
+    let mut header = raw::header(variant, input.h_body()).map_err(|e| ExportError::failed(format!("header: {e}")))?;
+    header.apply_attributes(&input.header.attributes);
     // Collision-only files: PhysX data and no meshes to draw.
     if header.mesh_infos.is_empty() || header.vertex_count == 0 {
         return Err(ExportError::unsupported("the model has no meshes (collision data only)"));

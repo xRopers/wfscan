@@ -115,6 +115,16 @@ pub trait Exporter: Send + Sync {
     fn version(&self) -> u32;
     fn kind(&self) -> Kind;
     fn export(&self, input: &ExportInput) -> Result<Vec<Output>, ExportError>;
+
+    /// Hand each output to `emit` as soon as it is made, so that an export of many large
+    /// files (a video's frames) never holds them all at once. The driver writes each one
+    /// as it arrives. By default, everything [`Exporter::export`] returns.
+    fn export_each(&self, input: &ExportInput, emit: &mut dyn FnMut(Output) -> Result<(), ExportError>) -> Result<(), ExportError> {
+        for output in self.export(input)? {
+            emit(output)?;
+        }
+        Ok(())
+    }
 }
 
 /// The exporters a run can use, at most one per kind.
@@ -320,19 +330,20 @@ impl Run<'_> {
             parts,
             oodle: self.oodle,
         };
-        let outputs = match catch_unwind(AssertUnwindSafe(|| exporter.export(&input))) {
-            Ok(Ok(outputs)) if outputs.is_empty() => return failed("the exporter produced no files".into()),
-            Ok(Ok(outputs)) => outputs,
-            Ok(Err(ExportError::Unsupported(reason))) => return (record(Status::Unsupported, tag, reason), 0),
-            Ok(Err(ExportError::Failed(reason))) => return failed(reason),
-            Err(panic) => return failed(panic_message(panic)),
+        // Each output is written as soon as the exporter hands it over.
+        let (mut paths, mut bytes) = (Vec::new(), 0u64);
+        let mut emit = |output: Output| -> Result<(), ExportError> {
+            bytes += self.write(std::slice::from_ref(&output)).map_err(ExportError::Failed)?;
+            paths.push(output.path);
+            Ok(())
         };
-        let bytes = match self.write(&outputs) {
-            Ok(bytes) => bytes,
-            Err(e) => return failed(e),
-        };
-        let outputs = outputs.into_iter().map(|o| o.path).collect();
-        (ExportRecord { status: Status::Ok, exporter: tag, reason: None, outputs }, bytes)
+        match catch_unwind(AssertUnwindSafe(|| exporter.export_each(&input, &mut emit))) {
+            Ok(Ok(())) if paths.is_empty() => failed("the exporter produced no files".into()),
+            Ok(Ok(())) => (ExportRecord { status: Status::Ok, exporter: tag, reason: None, outputs: paths }, bytes),
+            Ok(Err(ExportError::Unsupported(reason))) => (record(Status::Unsupported, tag, reason), 0),
+            Ok(Err(ExportError::Failed(reason))) => failed(reason),
+            Err(panic) => failed(panic_message(panic)),
+        }
     }
 }
 

@@ -84,14 +84,14 @@ wfscan index   <Cache.Windows> [-o manifest.json] [--hash] [--full-headers] [--n
 wfscan list    -m manifest.json [--package P] [--path PREFIX] [--type N] [--kind K] [--status S] [--failed] [--stale]
 wfscan export  <Cache.Windows> -m manifest.json -d out/ [--package P] [--path PREFIX] [--kinds K,K]
                [--texture-format dds|png] [--audio-format native|wav] [--changed-since old.json]
-               [--raw-unsupported] [--dry-run] [--force]
+               [--video-format bk2|png] [--raw-unsupported] [--dry-run] [--force]
 wfscan raw     <Cache.Windows> --path FILE|FOLDER/ [--package P] -d out/
 wfscan diff    old.json new.json [--list]
 wfscan report  -m manifest.json [--errors N] [--unknown]
 wfscan mcp     <Cache.Windows> [-m manifest.json]
 ```
 
-Every command takes `--json`. `-j N` sets the number of threads.
+Every command takes `--json`. `-j N` sets the number of threads. `--bink-dll PATH` names a Bink 2 library for videos as frames (see below).
 
 - **One bad file never stops a run.** Every file ends as `ok`, `failed`, `unsupported` or `skipped`, with a reason, recorded in the manifest. `report` groups the failures, so a format changed by a game update shows up as one line.
 - **Exports are incremental.** A file that was exported before, and whose output is still there, is skipped. After a game update, index again and pass the old manifest as `--changed-since` to export only what changed. `--force` exports everything again.
@@ -151,7 +151,7 @@ Measured on the September 2026 cache (446,923 files) with a Core Ultra 9 285K.
 
 ### Models
 
-- Static, level and rigged models (types 102, 105, 109 and 281) export with positions, two sets of texture coordinates, baked ambient occlusion (as `_OCCLUSION`), and for rigged models the skeleton and skin weights.
+- Static, level and rigged models (types 102, 105, 109 and 281), `_dcm` and `_hlod` models (108), patch meshes (299, scattered grass and the like) and terrain (166) export with positions, two sets of texture coordinates, baked ambient occlusion (as `_OCCLUSION`), and for rigged models the skeleton and skin weights.
 - **No normals or tangents**: how the game packs them isn't worked out. Viewers compute their own.
 - **Materials are names only.** Each mesh's material path is in the glTF material's `extras.path`; no textures are linked yet.
 - Only the most detailed level of each mesh is exported.
@@ -163,7 +163,8 @@ These are copied out as they are, after a check that each file is what its type 
 
 - **Sound banks** (the extensionless files under `Sounds`) become `.txt`: which samples a sound plays, at what gain and pitch, and how. The samples themselves are the sounds above.
 - **Scripts** (`.lua`) are compiled bytecode and go out as `.luac`. They aren't decompiled.
-- **Videos** (`.bk2`) are whole Bink files; RAD's Bink tools and some players open them.
+- **Videos** (`.bk2`) are whole Bink 2 files. Few players open Bink 2 (FFmpeg and VLC only read Bink 1), so `--video-format png` (Export > Videos as, in the app) decodes every frame to a PNG, in a folder named after the video, with a `video.json` giving the frame rate and size. Put them back together with any editor, or `ffmpeg -framerate 30 -i %05d.png video.mp4`. The sound track stays in the `.bk2`.
+  Decoding uses the game's own Bink library, `Warframe\Tools\Bink2\bink2w64.dll`, which wfscan finds next to the cache by itself; `--bink-dll PATH` (or `WFSCAN_BINK_DLL`, or Tools > Bink library in the app) points at another copy. wfscan doesn't include it. All 238 videos of the November 2026 cache decode, 83,576 frames (57 GiB as PNG) in two minutes. The app also shows a video's first frame.
 - **Flash** (`.swf`) are the game's interface movies.
 
 ### Not yet
