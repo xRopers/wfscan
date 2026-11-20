@@ -3251,7 +3251,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "wfscan-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3266,7 +3266,7 @@ dependencies = [
 
 [[package]]
 name = "wfscan-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bcdec_rs",
  "crc32fast",
@@ -3285,7 +3285,7 @@ dependencies = [
 
 [[package]]
 name = "wfscan-fixtures"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crc32fast",
  "serde_json",
@@ -3293,7 +3293,7 @@ dependencies = [
 
 [[package]]
 name = "wfscan-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "eframe",

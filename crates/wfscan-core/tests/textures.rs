@@ -1,4 +1,4 @@
-﻿//! Texture export, checked by reading the results back with texscan: on the synthetic
+//! Texture export, checked by reading the results back with texscan: on the synthetic
 //! `textures` fixture, where every pixel is known, and on a real cache, where each mip
 //! must look like the one above it.
 #![cfg(feature = "png")]
