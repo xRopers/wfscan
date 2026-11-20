@@ -218,6 +218,17 @@ fn export_records_a_status_for_every_file() {
     let text = String::from_utf8(ok(&["export", &cache, "-m", &manifest, "-d", s(&out), "--path", "/Lotus/Scripts/"]).stdout).unwrap();
     assert!(text.contains("1 files selected: 0 ok, 0 failed, 1 unsupported, 0 skipped") && text.contains("updated"), "{text}");
 
+    // --raw-unsupported writes the parts of what nothing reads, and they stay unsupported.
+    let text = String::from_utf8(ok(&["export", &cache, "-m", &manifest, "-d", s(&out), "--path", "/Lotus/Scripts/", "--raw-unsupported"]).stdout).unwrap();
+    assert!(text.contains("1 unsupported, 0 skipped") && text.contains("1 unsupported files written as raw parts"), "{text}");
+    let scripts = ok_json(&["list", "-m", &manifest, "--path", "/Lotus/Scripts/", "--json"]);
+    let record = &scripts[0]["export"];
+    assert_eq!((&record["status"], &record["exporter"]), (&Value::from("unsupported"), &Value::from("raw@1")));
+    for output in record["outputs"].as_array().unwrap() {
+        let file = output.as_str().unwrap().trim_start_matches('/');
+        assert!(out.join(file).is_file(), "{file}");
+    }
+
     let err = failure(&["export", &cache, "-m", &manifest, "-d", s(&out), "--kinds", "mesh"]);
     assert!(err.contains("unknown kind"), "{err}");
 }

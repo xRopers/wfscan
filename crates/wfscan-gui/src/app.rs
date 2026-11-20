@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use egui::{Align, Color32, ColorImage, Key, Layout, RichText, Sense, Ui, ViewportCommand};
+use egui::{Align, Color32, ColorImage, Key, Layout, Modifiers, RichText, Sense, Ui, ViewportCommand};
 use egui_extras::{Column, TableBuilder};
 use wfscan_core::formats::model::render::render;
 use wfscan_core::{AudioOutput, FormatOptions, Kind, Part, Report, Status, TextureOutput, report};
@@ -76,11 +76,47 @@ pub enum Tab {
 /// How far each level of the tree is indented.
 const INDENT: f32 = 16.0;
 
-/// What a click in the sound preview asks for.
-enum SoundAction {
+/// What a row's right-click menu asks for.
+enum RowAction {
+    Export(HashSet<usize>),
+    /// Add a folder's files to the selection, or take them out.
+    SelectFolder(usize),
+}
+
+/// The modifier keys held for this frame's click. Read from the click itself, because
+/// the keys may be let go in the same frame.
+fn click_modifiers(ui: &Ui) -> Modifiers {
+    ui.input(|i| {
+        i.events
+            .iter()
+            .rev()
+            .find_map(|e| if let egui::Event::PointerButton { modifiers, .. } = e { Some(*modifiers) } else { None })
+            .unwrap_or(i.modifiers)
+    })
+}
+
+/// The right-click menu of a file: export it, or the whole selection if it is part of one.
+fn file_menu(ui: &mut Ui, file: usize, selection: &HashSet<usize>, busy: bool, action: &mut Option<RowAction>) {
+    if selection.len() > 1
+        && selection.contains(&file)
+        && ui.add_enabled(!busy, egui::Button::new(format!("Export the {} selected files…", selection.len()))).clicked()
+    {
+        *action = Some(RowAction::Export(selection.clone()));
+        ui.close();
+    }
+    if ui.add_enabled(!busy, egui::Button::new("Export this file…")).clicked() {
+        *action = Some(RowAction::Export(HashSet::from([file])));
+        ui.close();
+    }
+}
+
+/// What a click in the preview pane asks for.
+enum PaneAction {
     /// Play from this point of the sound, 0 to 1.
     Play(f32),
     Stop,
+    /// Save these parts of the file, whole, into one file.
+    SaveParts(Vec<Part>),
 }
 
 pub struct App {
@@ -92,8 +128,13 @@ pub struct App {
     player: Player,
     /// The file whose sound is playing.
     playing: Option<usize>,
-    /// The selected file, as a position in the session's file list.
+    /// The file the details pane shows, as a position in the session's file list.
     pub selected: Option<usize>,
+    /// The files picked for export (Ctrl+click, Shift+click, Ctrl+A, Ctrl+click on a
+    /// folder): always among the files shown.
+    pub selection: HashSet<usize>,
+    /// Where a Shift+click range starts: the last file clicked without Shift.
+    anchor: Option<usize>,
     scroll_to_selected: bool,
     pub filter: Filter,
     /// The sort column, and whether it ascends.
@@ -114,6 +155,8 @@ pub struct App {
     view_key: Option<(Filter, (SortKey, bool), u64)>,
     pub texture_format: TextureOutput,
     pub audio_format: AudioOutput,
+    /// Write the raw parts of files nothing can export yet.
+    pub raw_unsupported: bool,
     pub show_oodle: bool,
     pub show_coverage: bool,
     show_log: bool,
@@ -137,6 +180,8 @@ impl App {
             player: Player::default(),
             playing: None,
             selected: None,
+            selection: HashSet::new(),
+            anchor: None,
             scroll_to_selected: false,
             filter: Filter::default(),
             sort: (SortKey::Package, true),
@@ -152,6 +197,7 @@ impl App {
             view_key: None,
             texture_format: TextureOutput::Dds,
             audio_format: AudioOutput::Native,
+            raw_unsupported: false,
             show_oodle: false,
             show_coverage: false,
             show_log: false,
@@ -207,6 +253,7 @@ impl App {
     pub fn open_cache(&mut self, dir: PathBuf) {
         self.stop();
         self.selected = None;
+        self.clear_selection();
         self.preview.clear();
         self.settings.cache_dir = Some(dir.clone());
         self.save_settings();
@@ -228,6 +275,7 @@ impl App {
         self.stop();
         self.session.close();
         self.selected = None;
+        self.clear_selection();
         self.preview.clear();
     }
 
@@ -237,13 +285,57 @@ impl App {
         let (cache, manifest) = (loaded.cache.clone(), loaded.manifest.clone());
         let oodle = self.session.oodle.clone();
         let formats = FormatOptions { texture: self.texture_format, audio: self.audio_format, vorbis: None };
+        let raw_unsupported = self.raw_unsupported;
         self.settings.export_dir = Some(dir.clone());
         self.save_settings();
         let label = format!("Exporting {} files", files.len());
         self.jobs.start(label, move || {
-            let result = session::run_export(&cache, manifest, files, &dir, &formats, oodle);
+            let result = session::run_export(&cache, manifest, files, &dir, &formats, raw_unsupported, oodle);
             finish("Export", result, move |s, (manifest, stats)| s.set_exported(manifest, stats, dir))
         });
+    }
+
+    /// Save `parts` of the file at `file`, whole and decompressed, one after another into
+    /// `target`. The log says where each part starts.
+    pub fn start_save_parts(&mut self, file: usize, parts: Vec<Part>, target: PathBuf) {
+        let Some(loaded) = &self.session.loaded else { return };
+        let entry = &loaded.manifest.files[file];
+        let (cache, package, path) = (loaded.cache.clone(), entry.package.clone(), entry.path.clone());
+        let oodle = self.session.oodle.clone();
+        let label = format!("Saving {}", tree::file_name(&path));
+        if self.jobs.busy() {
+            self.session.error("Save: wait for the running job to finish");
+            return;
+        }
+        self.jobs.start(label, move || {
+            let result = session::save_parts(&cache, &package, &path, &parts, oodle, &target);
+            finish("Save", result, move |s, sizes| {
+                let mut at = 0;
+                let mut pieces = Vec::new();
+                for (part, size) in sizes {
+                    pieces.push(format!("{part} {} at byte {at}", human_size(size as u64)));
+                    at += size;
+                }
+                s.info(format!("saved {} ({})", target.display(), pieces.join(", ")));
+            })
+        });
+    }
+
+    fn pick_and_save_parts(&mut self, file: usize, parts: Vec<Part>) {
+        let Some(loaded) = &self.session.loaded else { return };
+        let name = tree::file_name(&loaded.manifest.files[file].path);
+        let suffix: String = parts.iter().map(|p| p.to_string()).collect();
+        let mut dialog = rfd::FileDialog::new().set_title("Save the raw bytes as").set_file_name(format!("{name}.{suffix}"));
+        if let Some(dir) = &self.settings.export_dir {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(target) = dialog.save_file() {
+            if let Some(dir) = target.parent() {
+                self.settings.export_dir = Some(dir.to_path_buf());
+                self.save_settings();
+            }
+            self.start_save_parts(file, parts, target);
+        }
     }
 
     fn pick_and_export(&mut self, files: HashSet<usize>) {
@@ -256,9 +348,80 @@ impl App {
         }
     }
 
+    /// Select just this file, show it and scroll to it.
     pub fn select(&mut self, file: usize) {
         self.selected = Some(file);
+        self.selection = HashSet::from([file]);
+        self.anchor = Some(file);
         self.scroll_to_selected = true;
+    }
+
+    /// A click on a file's row: alone it selects the file, with Ctrl it adds the file to
+    /// the selection or takes it out, with Shift it selects the files on screen from the
+    /// last file clicked to this one (adding to the selection with Ctrl too).
+    pub fn click_file(&mut self, file: usize, modifiers: Modifiers) {
+        if modifiers.shift
+            && let Some(anchor) = self.anchor
+        {
+            let order = self.visible_files();
+            if let (Some(a), Some(b)) = (order.iter().position(|&i| i == anchor), order.iter().position(|&i| i == file)) {
+                if !modifiers.command {
+                    self.selection.clear();
+                }
+                self.selection.extend(&order[a.min(b)..=a.max(b)]);
+                self.selected = Some(file);
+                return;
+            }
+        }
+        if modifiers.command {
+            if self.selection.insert(file) {
+                self.selected = Some(file);
+            } else {
+                self.selection.remove(&file);
+                if self.selected == Some(file) {
+                    self.selected = None;
+                }
+            }
+        } else {
+            self.selected = Some(file);
+            self.selection = HashSet::from([file]);
+        }
+        self.anchor = Some(file);
+    }
+
+    /// Add every file in a folder of the tree (at any depth) to the selection, or take
+    /// them all out if they are all in it already.
+    pub fn select_folder(&mut self, folder: usize) {
+        let files = self.tree.files_under(folder);
+        if files.iter().all(|f| self.selection.contains(f)) {
+            for file in &files {
+                self.selection.remove(file);
+            }
+            if self.selected.is_some_and(|f| !self.selection.contains(&f)) {
+                self.selected = None;
+            }
+        } else {
+            self.selection.extend(files);
+        }
+    }
+
+    /// Select every file shown, folded away or not.
+    pub fn select_all_shown(&mut self) {
+        self.selection = self.view.iter().copied().collect();
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection.clear();
+        self.anchor = None;
+    }
+
+    /// The files on screen, in order: the list's rows, or the files in the tree's open
+    /// folders.
+    fn visible_files(&self) -> Vec<usize> {
+        match self.view_mode {
+            ViewMode::List => self.view.clone(),
+            ViewMode::Tree => self.rows.iter().filter_map(|row| if let Row::File { file, .. } = row { Some(*file) } else { None }).collect(),
+        }
     }
 
     /// Play the selected file's sound from `fraction` (0 to 1) of the way through.
@@ -358,6 +521,11 @@ impl App {
                 view.reverse();
             }
         }
+        // The selection is of files shown: a file the filter hides drops out of it.
+        if !self.selection.is_empty() {
+            let shown: HashSet<usize> = view.iter().copied().collect();
+            self.selection.retain(|f| shown.contains(f));
+        }
         self.view = view;
         self.view_key = Some(key);
     }
@@ -431,17 +599,30 @@ impl App {
                 self.play(0.0);
             }
         }
-        // Arrow keys move through the files on screen when nothing else has focus.
-        let step = ctx.input(|i| i.key_pressed(Key::ArrowDown) as i64 - i.key_pressed(Key::ArrowUp) as i64);
-        if step != 0 && ctx.memory(|m| m.focused().is_none()) {
-            let files: Vec<usize> = match self.view_mode {
-                ViewMode::List => self.view.clone(),
-                ViewMode::Tree => self.rows.iter().filter_map(|row| if let Row::File { file, .. } = row { Some(*file) } else { None }).collect(),
-            };
+        let unfocused = ctx.memory(|m| m.focused().is_none());
+        // Arrow keys move through the files on screen when nothing else has focus; with
+        // Shift they stretch the selection.
+        let (step, shift) = ctx.input(|i| (i.key_pressed(Key::ArrowDown) as i64 - i.key_pressed(Key::ArrowUp) as i64, i.modifiers.shift));
+        if step != 0 && unfocused {
+            let files = self.visible_files();
             if !files.is_empty() {
                 let position = self.selected.and_then(|file| files.iter().position(|&i| i == file));
                 let next = position.map_or(0, |p| (p as i64 + step).clamp(0, files.len() as i64 - 1) as usize);
-                self.select(files[next]);
+                if shift {
+                    self.click_file(files[next], Modifiers::SHIFT);
+                    self.scroll_to_selected = true;
+                } else {
+                    self.select(files[next]);
+                }
+            }
+        }
+        // Ctrl+A selects every file shown, Escape none.
+        if unfocused && self.session.loaded.is_some() {
+            if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::A)) {
+                self.select_all_shown();
+            }
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                self.clear_selection();
             }
         }
     }
@@ -480,9 +661,15 @@ impl App {
                 ui.close();
                 self.pick_and_export(self.view.iter().copied().collect());
             }
-            if ui.add_enabled(self.selected.is_some() && !busy, egui::Button::new("Export the selected file…")).clicked() {
+            let picked = self.selection.len();
+            let label = if picked == 1 { "Export the selected file…".to_string() } else { format!("Export the {picked} selected files…") };
+            if ui
+                .add_enabled(picked > 0 && !busy, egui::Button::new(label))
+                .on_hover_text("Ctrl+click and Shift+click pick files; Ctrl+click a folder for all of it")
+                .clicked()
+            {
                 ui.close();
-                self.pick_and_export(self.selected.into_iter().collect());
+                self.pick_and_export(self.selection.clone());
             }
             ui.separator();
             ui.label("Textures as");
@@ -492,6 +679,10 @@ impl App {
             ui.label("Sounds as");
             ui.radio_value(&mut self.audio_format, AudioOutput::Native, "Ogg Vorbis, Opus or WAV (exact)");
             ui.radio_value(&mut self.audio_format, AudioOutput::Wav, "WAV (decoded, larger)");
+            ui.separator();
+            ui.checkbox(&mut self.raw_unsupported, "Unsupported files as raw parts").on_hover_text(
+                "Files wfscan can't convert yet are written as their decompressed parts (name.H, name.B, name.F). They still count as unsupported.",
+            );
         });
         ui.menu_button("Tools", |ui| {
             if ui.button("Oodle library…").clicked() {
@@ -575,6 +766,19 @@ impl App {
             if ui.add_enabled(!busy && shown > 0, egui::Button::new(format!("Export {shown} shown…"))).clicked() {
                 self.pick_and_export(self.view.iter().copied().collect());
             }
+            let picked = self.selection.len();
+            if picked > 0 {
+                if ui
+                    .add_enabled(!busy, egui::Button::new(format!("Export {picked} selected…")))
+                    .on_hover_text("Ctrl+click and Shift+click pick files; Ctrl+click a folder for all of it")
+                    .clicked()
+                {
+                    self.pick_and_export(self.selection.clone());
+                }
+                if picked > 1 && ui.small_button("×").on_hover_text("Select none (Escape)").clicked() {
+                    self.clear_selection();
+                }
+            }
         });
     }
 
@@ -596,6 +800,9 @@ impl App {
                 if self.session.loaded.is_some() {
                     let total = self.session.files().iter().filter(|f| !f.stale).count();
                     ui.label(format!("{} of {} files", self.view.len(), total));
+                    if self.selection.len() > 1 {
+                        ui.label(format!("{} selected", self.selection.len()));
+                    }
                 }
                 match (&self.session.oodle, &self.session.oodle_error) {
                     (Some(_), _) => ui.weak("Oodle ready"),
@@ -620,9 +827,12 @@ impl App {
         ui.style_mut().interaction.selectable_labels = false;
         let Some(loaded) = &self.session.loaded else { return };
         let files = &loaded.manifest.files;
-        let (tree, rows, open) = (&self.tree, &self.rows, &self.open);
+        let (tree, rows, open, selection) = (&self.tree, &self.rows, &self.open, &self.selection);
+        let busy = self.jobs.busy();
+        let modifiers = click_modifiers(ui);
         let mut clicked_file: Option<usize> = None;
         let mut clicked_folder: Option<usize> = None;
+        let mut action: Option<RowAction> = None;
 
         let mut table = TableBuilder::new(ui)
             .striped(true)
@@ -661,13 +871,26 @@ impl App {
                         for _ in 0..4 {
                             row.col(|_| {});
                         }
-                        if row.response().clicked() {
+                        let response = row.response();
+                        if response.clicked() {
                             clicked_folder = Some(folder);
                         }
+                        response.context_menu(|ui| {
+                            let total = folder_info.total;
+                            let label = if total == 1 { "Export this folder (1 file)…".to_string() } else { format!("Export this folder ({total} files)…") };
+                            if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
+                                action = Some(RowAction::Export(tree.files_under(folder).into_iter().collect()));
+                                ui.close();
+                            }
+                            if ui.button("Select its files").on_hover_text("Ctrl+click the folder does the same").clicked() {
+                                action = Some(RowAction::SelectFolder(folder));
+                                ui.close();
+                            }
+                        });
                     }
                     Row::File { file: index, depth } => {
                         let file = &files[index];
-                        row.set_selected(self.selected == Some(index));
+                        row.set_selected(selection.contains(&index));
                         row.col(|ui| {
                             ui.add_space(depth as f32 * INDENT + INDENT);
                             ui.add(egui::Label::new(tree::file_name(&file.path)).extend());
@@ -694,17 +917,31 @@ impl App {
                                 ui.colored_label(status_color(export.status, ui), export.status.name());
                             }
                         });
-                        if row.response().clicked() {
+                        let response = row.response();
+                        if response.clicked() {
                             clicked_file = Some(index);
                         }
+                        response.context_menu(|ui| file_menu(ui, index, selection, busy, &mut action));
                     }
                 });
             });
         if let Some(index) = clicked_file {
-            self.selected = Some(index);
+            self.click_file(index, modifiers);
         }
-        if let Some(folder) = clicked_folder {
-            self.toggle_folder(folder);
+        // Ctrl+click on a folder picks its files; a plain click opens or closes it.
+        match clicked_folder {
+            Some(folder) if modifiers.command => self.select_folder(folder),
+            Some(folder) => self.toggle_folder(folder),
+            None => {}
+        }
+        self.row_action(action);
+    }
+
+    fn row_action(&mut self, action: Option<RowAction>) {
+        match action {
+            Some(RowAction::Export(files)) => self.pick_and_export(files),
+            Some(RowAction::SelectFolder(folder)) => self.select_folder(folder),
+            None => {}
         }
     }
 
@@ -734,8 +971,11 @@ impl App {
         ui.style_mut().interaction.selectable_labels = false;
         let Some(loaded) = &self.session.loaded else { return };
         let files = &loaded.manifest.files;
-        let view = &self.view;
+        let (view, selection) = (&self.view, &self.selection);
+        let busy = self.jobs.busy();
+        let modifiers = click_modifiers(ui);
         let mut clicked: Option<usize> = None;
+        let mut action: Option<RowAction> = None;
         let mut sort = self.sort;
 
         let mut table = TableBuilder::new(ui)
@@ -782,7 +1022,7 @@ impl App {
                 body.rows(row_height, view.len(), |mut row| {
                     let index = view[row.index()];
                     let file = &files[index];
-                    row.set_selected(self.selected == Some(index));
+                    row.set_selected(selection.contains(&index));
                     row.col(|ui| {
                         ui.label(&file.package);
                     });
@@ -811,15 +1051,18 @@ impl App {
                     row.col(|ui| {
                         ui.add(egui::Label::new(&file.path).extend());
                     });
-                    if row.response().clicked() {
+                    let response = row.response();
+                    if response.clicked() {
                         clicked = Some(index);
                     }
+                    response.context_menu(|ui| file_menu(ui, index, selection, busy, &mut action));
                 });
             });
         self.sort = sort;
         if let Some(index) = clicked {
-            self.selected = Some(index);
+            self.click_file(index, modifiers);
         }
+        self.row_action(action);
     }
 
     fn details(&mut self, ui: &mut Ui) {
@@ -873,8 +1116,13 @@ impl App {
             }
         });
         ui.add_space(4.0);
+        let mut export_selection = false;
         ui.horizontal(|ui| {
             export_this = ui.add_enabled(!self.jobs.busy(), egui::Button::new("Export this file…")).clicked();
+            let picked = self.selection.len();
+            if picked > 1 {
+                export_selection = ui.add_enabled(!self.jobs.busy(), egui::Button::new(format!("Export the {picked} selected…"))).clicked();
+            }
         });
         ui.separator();
 
@@ -892,8 +1140,9 @@ impl App {
             sound = preview_pane(ui, &mut self.preview, index, position, &mut self.tab, &mut self.raw_part);
         }
         match sound {
-            Some(SoundAction::Play(from)) => self.play(from),
-            Some(SoundAction::Stop) => self.stop(),
+            Some(PaneAction::Play(from)) => self.play(from),
+            Some(PaneAction::Stop) => self.stop(),
+            Some(PaneAction::SaveParts(parts)) => self.pick_and_save_parts(index, parts),
             None => {}
         }
 
@@ -902,6 +1151,9 @@ impl App {
         }
         if export_this {
             self.pick_and_export(HashSet::from([index]));
+        }
+        if export_selection {
+            self.pick_and_export(self.selection.clone());
         }
     }
 
@@ -1017,7 +1269,7 @@ impl eframe::App for App {
 /// The loaded preview: what the file is, its attribute text, and under the tabs a
 /// picture, a model to turn around or a sound to play, or one of the file's parts as hex
 /// or text. `playing` is the frame the file's sound has reached, if it is playing.
-fn preview_pane(ui: &mut Ui, preview: &mut Previewer, id: usize, playing: Option<u64>, tab: &mut Tab, raw_part: &mut Part) -> Option<SoundAction> {
+fn preview_pane(ui: &mut Ui, preview: &mut Previewer, id: usize, playing: Option<u64>, tab: &mut Tab, raw_part: &mut Part) -> Option<PaneAction> {
     let Previewer { current, texture, drawn, view, .. } = preview;
     let loaded = match current {
         Some(Ok(loaded)) => loaded,
@@ -1039,7 +1291,8 @@ fn preview_pane(ui: &mut Ui, preview: &mut Previewer, id: usize, playing: Option
     ui.add_space(4.0);
     // A file with no viewer shows its bytes under Preview too.
     let shown = if loaded.content.is_none() && *tab == Tab::Preview { Tab::Hex } else { *tab };
-    ui.horizontal(|ui| {
+    // Wrapped, so the save buttons never widen the pane.
+    ui.horizontal_wrapped(|ui| {
         for (value, label) in [(Tab::Preview, "Preview"), (Tab::Hex, "Hex"), (Tab::Text, "Text")] {
             ui.selectable_value(tab, value, label);
         }
@@ -1047,6 +1300,21 @@ fn preview_pane(ui: &mut Ui, preview: &mut Previewer, id: usize, playing: Option
             ui.separator();
             for raw in &loaded.raw {
                 ui.selectable_value(raw_part, raw.part, format!("{} ({})", raw.part, human_size(raw.size as u64)));
+            }
+            // The part on screen (the first, if the chosen one isn't there), and all of them.
+            if let Some(on_screen) = loaded.raw.iter().find(|raw| raw.part == *raw_part).or(loaded.raw.first()) {
+                ui.separator();
+                let part = on_screen.part;
+                if ui.button(format!("Save {part}…")).on_hover_text(format!("Save the whole {part} part, decompressed, as one file")).clicked() {
+                    action = Some(PaneAction::SaveParts(vec![part]));
+                }
+                if loaded.raw.len() > 1 {
+                    let all: Vec<Part> = loaded.raw.iter().map(|raw| raw.part).collect();
+                    let names: String = all.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" + ");
+                    if ui.button("Save all as one…").on_hover_text(format!("Save {names}, decompressed, one after another in one file")).clicked() {
+                        action = Some(PaneAction::SaveParts(all));
+                    }
+                }
             }
         }
     });
@@ -1064,7 +1332,7 @@ fn preview_pane(ui: &mut Ui, preview: &mut Previewer, id: usize, playing: Option
                 Tab::Text => text_view(ui, ("text", id, raw.part), &raw.text),
                 _ => hex_view(ui, ("hex", id, raw.part), &raw.bytes),
             }
-            return None;
+            return action;
         }
     };
     match content {
@@ -1108,15 +1376,15 @@ fn preview_pane(ui: &mut Ui, preview: &mut Previewer, id: usize, playing: Option
         Ok(Content::Audio { pcm, peaks }) => {
             let fraction = playing.map(|frame| frame as f32 / pcm.frames().max(1) as f32);
             if let Some(at) = waveform(ui, peaks, fraction, 120.0) {
-                action = Some(SoundAction::Play(at));
+                action = Some(PaneAction::Play(at));
             }
             ui.horizontal(|ui| {
                 if playing.is_some() {
                     if ui.button("Stop").clicked() {
-                        action = Some(SoundAction::Stop);
+                        action = Some(PaneAction::Stop);
                     }
                 } else if ui.button("Play").clicked() {
-                    action = Some(SoundAction::Play(0.0));
+                    action = Some(PaneAction::Play(0.0));
                 }
                 let now = playing.map_or(0.0, |frame| frame as f64 / f64::from(pcm.sample_rate.max(1)));
                 ui.monospace(format!("{} / {}", clock(now), clock(pcm.seconds())));

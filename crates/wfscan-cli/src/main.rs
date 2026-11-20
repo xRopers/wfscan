@@ -1,3 +1,5 @@
+mod mcp;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -80,7 +82,7 @@ enum Command {
         #[arg(long = "type", value_name = "N")]
         type_id: Option<u32>,
         /// Only files of this kind (model, texture, material, audio, level, level-static,
-        /// landscape, shader, icon)
+        /// landscape, shader, icon, video, flash, script, sound-bank)
         #[arg(long)]
         kind: Option<Kind>,
         /// Only files whose export ended this way (ok, failed, unsupported, skipped)
@@ -126,7 +128,7 @@ enum Command {
         #[arg(long, value_name = "PREFIX")]
         path: Option<String>,
         /// Only these kinds, comma separated (model, texture, material, audio, level,
-        /// level-static, landscape, shader, icon)
+        /// level-static, landscape, shader, icon, video, flash, script, sound-bank)
         #[arg(long, value_delimiter = ',')]
         kinds: Vec<Kind>,
         /// What textures become: dds (exact: the game's data with every mip, face and
@@ -152,6 +154,10 @@ enum Command {
         /// Export again even where an earlier export still stands
         #[arg(long)]
         force: bool,
+        /// Files nothing can export yet: write their decompressed parts as they are
+        /// (PATH.H, PATH.B, PATH.F). They stay `unsupported` in the manifest and report
+        #[arg(long)]
+        raw_unsupported: bool,
     },
     /// What changed between two manifests, such as before and after a game update
     Diff {
@@ -160,6 +166,16 @@ enum Command {
         /// List every file, not just the totals per type
         #[arg(long)]
         list: bool,
+    },
+    /// Serve the cache to an AI client over the Model Context Protocol (stdin/stdout):
+    /// tools to find files, read their bytes, see coverage and export
+    Mcp {
+        /// The game's Cache.Windows folder
+        cache: PathBuf,
+        /// Use this manifest if it matches the cache, and save export results to it
+        /// [default: index the cache at the first request and keep it in memory]
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
     },
     /// Coverage per file type: how many files, whether wfscan knows the type, and how
     /// reads and exports ended
@@ -214,9 +230,9 @@ fn run(cli: Cli) -> Result<()> {
             cmd_list(&manifest, &filter, cli.json)
         }
         Command::Raw { cache, path, package, dir } => cmd_raw(&open(&cache)?, &path, package.as_deref(), &dir, oodle, cli.json),
-        Command::Export { cache, manifest, dir, package, path, kinds, texture_format, audio_format, game_exe, changed_since, dry_run, force } => {
+        Command::Export { cache, manifest, dir, package, path, kinds, texture_format, audio_format, game_exe, changed_since, dry_run, force, raw_unsupported } => {
             let vorbis = game_exe.as_deref().map(vorbis_tables).transpose()?;
-            let opts = ExportOptions { package, path, kinds, dry_run, force, files: None };
+            let opts = ExportOptions { package, path, kinds, dry_run, force, raw_unsupported, files: None };
             let exporters = Exporters::builtin(&FormatOptions { texture: texture_format, audio: audio_format, vorbis });
             let job =
                 ExportJob { manifest_path: &manifest, changed_since: changed_since.as_deref(), out_dir: &dir, opts: &opts, exporters: &exporters };
@@ -224,6 +240,10 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Diff { old, new, list } => cmd_diff(&old, &new, list, cli.json),
         Command::Report { manifest, errors, unknown } => cmd_report(&manifest, errors, unknown, cli.json),
+        Command::Mcp { cache, manifest } => {
+            eprintln!("wfscan mcp: serving {} on stdin/stdout", cache.display());
+            mcp::Server::new(cache, manifest, oodle, cli.allow_in_use).serve(std::io::stdin().lock(), std::io::stdout().lock())
+        }
     }
 }
 
@@ -527,6 +547,9 @@ fn cmd_export(cache: &Cache, job: &ExportJob, oodle: Result<Oodle, String>, json
         thousands(stats.unsupported),
         thousands(stats.skipped)
     );
+    if stats.raw > 0 {
+        println!("{} unsupported files written as raw parts", thousands(stats.raw));
+    }
     let wrote = if opts.dry_run { "would write" } else { "wrote" };
     println!("{wrote} {} files, {}, to {} in {:.1} s", thousands(stats.outputs), mib(stats.bytes), out_dir.display(), stats.elapsed.as_secs_f64());
     if opts.dry_run {

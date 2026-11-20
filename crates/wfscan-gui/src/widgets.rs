@@ -20,7 +20,9 @@ pub fn kind_color(kind: Kind) -> Color32 {
         Kind::Model => Color32::from_rgb(120, 170, 255),
         Kind::Texture => Color32::from_rgb(120, 210, 140),
         Kind::Material => Color32::from_rgb(230, 180, 90),
-        Kind::Audio => Color32::from_rgb(210, 140, 220),
+        Kind::Audio | Kind::SoundBank => Color32::from_rgb(210, 140, 220),
+        Kind::Video | Kind::Flash => Color32::from_rgb(240, 200, 120),
+        Kind::Script => Color32::from_rgb(190, 190, 150),
         Kind::Level | Kind::LevelStatic | Kind::Landscape => Color32::from_rgb(230, 130, 110),
         Kind::Shader | Kind::Icon => Color32::from_rgb(160, 200, 210),
     }

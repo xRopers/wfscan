@@ -547,7 +547,7 @@ pub fn textures() -> Fixture {
     short.b.truncate(short.b.len() - 4);
     // Good data under a format code wfscan has no name for.
     let mut lut = texture(10, (4, 4), 4, 1, 0, 4);
-    lut.header[3] = 31;
+    lut.header[3] = 32;
     let files = vec![
         texture_file(tex::SPLIT, 163, texture(10, (16, 16), 16, 3, 2, 1)),
         texture_file(tex::ICON, 163, texture(10, (8, 8), 8, 0, 4, 1)),
@@ -918,9 +918,95 @@ pub fn sounds() -> Fixture {
     Fixture { name: "sounds", packages: vec![FxPackage { name: "Misc".into(), parts: "HBF", files }] }
 }
 
+/// Paths of the [`passthrough`] fixture.
+pub mod pt {
+    pub const VIDEO: &str = "/Lotus/Fx/Intro.bk2";
+    pub const VIDEO_STREAMED: &str = "/Lotus/Interface/AbilityVideos/Power1_s.bk2";
+    pub const VIDEO_SHORT: &str = "/Lotus/Fx/Cut.bk2";
+    pub const FLASH: &str = "/EE/Interface/Menu.swf";
+    pub const FLASH_OTHER: &str = "/Lotus/Interface/Hud.swf";
+    pub const SCRIPT: &str = "/EE/Interface/AnchorMgr.lua";
+    pub const SCRIPT_BROKEN: &str = "/EE/Scripts/Broken.lua";
+    pub const BANK: &str = "/Lotus/Sounds/Weapons/RifleFire";
+    pub const BANK_EMPTY: &str = "/Lotus/Sounds/Empty";
+    pub const NOT_A_BANK: &str = "/Lotus/Animations/FlightSuit/BowFlightMove";
+}
+
+/// The attribute text of [`pt::BANK`].
+pub const BANK_TEXT: &str = "BankDefaults={\n    Gain={-1,3}\n}\nSamples={\n    {\n        Sample=RifleFireA.wav\n        PlayMode=ONE_SHOT\n    }\n}\n";
+
+/// A Bink file: magic, then its size minus 8, then `len - 8` more bytes.
+pub fn bink(magic: &[u8; 3], len: usize) -> Vec<u8> {
+    let mut data = magic.to_vec();
+    data.push(b'j');
+    data.extend_from_slice(&(len as u32 - 8).to_le_bytes());
+    data.extend(noise(len - 8, len as u32));
+    data
+}
+
+/// Compiled script bytecode: version bytes, a string table, then code.
+pub fn script_bytecode(strings: &[&str]) -> Vec<u8> {
+    let mut data = vec![9, 3, strings.len() as u8];
+    for s in strings {
+        data.push(s.len() as u8);
+        data.extend_from_slice(s.as_bytes());
+    }
+    data.extend(noise(40, 3));
+    data
+}
+
+/// Files that are copied out as they are: Bink videos (whole, streamed, cut short),
+/// SWF movies (one good, one without the magic), compiled scripts (one whose string
+/// table runs off the end) and sound banks (one with no attribute text, and a file of
+/// the same type with data in B, which isn't a bank).
+pub fn passthrough() -> Fixture {
+    let file = |path: &str, type_id: u32, attributes: &str, b: Option<Vec<u8>>, f: Option<Vec<u8>>| FxFile {
+        path: path.into(),
+        stale: false,
+        parts: [Some(packed(headed(path, attributes, type_id, vec![1, 2, 3, 4]))), b.map(packed), f.map(packed)],
+        type_id: Some(type_id),
+        timestamp: TIMESTAMP,
+    };
+    let mut short = bink(b"KB2", 600);
+    short.truncate(500);
+    let mut swf = b"FWS\x0a".to_vec();
+    swf.extend_from_slice(&300u32.to_le_bytes());
+    swf.extend(noise(292, 9));
+    let mut broken = script_bytecode(&["clip"]);
+    broken[3] = 200;
+    broken.truncate(10);
+    let video = FxPackage {
+        name: "VideoTexture".into(),
+        parts: "HBF",
+        files: vec![file(pt::VIDEO_SHORT, 170, "", None, Some(short)), file(pt::VIDEO, 170, "", Some(noise(16, 1)), Some(bink(b"KB2", 1000)))],
+    };
+    let streamed = FxPackage { name: "VideoTextureStreaming".into(), parts: "HF", files: vec![file(pt::VIDEO_STREAMED, 170, "", None, Some(bink(b"BIK", 400)))] };
+    let retarget = FxPackage { name: "AnimRetarget".into(), parts: "HB", files: vec![file(pt::FLASH, 9, "", Some(swf), None)] };
+    let font = FxPackage {
+        name: "Font".into(),
+        parts: "HB",
+        files: vec![
+            file(pt::SCRIPT, 120, "", Some(script_bytecode(&["clip", "originalX", "alignVertical"])), None),
+            file(pt::SCRIPT_BROKEN, 110, "", Some(broken), None),
+        ],
+    };
+    let misc = FxPackage {
+        name: "Misc".into(),
+        parts: "HBF",
+        files: vec![
+            file(pt::FLASH_OTHER, 10, "", Some(noise(64, 4)), None),
+            file(pt::BANK_EMPTY, 6, "", None, None),
+            file(pt::BANK, 6, BANK_TEXT, None, None),
+            file(pt::NOT_A_BANK, 6, "Anim=BowFlight
+", Some(noise(32, 7)), None),
+        ],
+    };
+    Fixture { name: "passthrough", packages: vec![retarget, font, misc, video, streamed] }
+}
+
 /// Every fixture, for `gen-fixtures`.
 pub fn all() -> Vec<Fixture> {
-    vec![basic(), basic_updated(), textures(), models(), sounds()]
+    vec![basic(), basic_updated(), textures(), models(), sounds(), passthrough()]
 }
 
 #[cfg(test)]

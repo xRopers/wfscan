@@ -31,11 +31,25 @@ pub enum PixelFormat {
     Bgra8,
     A8,
     R16,
+    /// 10-bit red, green and blue and 2-bit alpha, packed in a little-endian u32 (red in
+    /// the low bits). The game's 33x33x33 colour grading LUTs.
+    Rgb10a2,
+    /// Four unsigned bytes, read as integers: lightmap indirection volumes, whose texels
+    /// are tile coordinates.
+    Rgba8Uint,
 }
 
 impl PixelFormat {
-    /// The format for a header's format code. 31, 32, 33 and 44 also occur and are not
-    /// known. Source: the original's format table.
+    /// The format for a header's format code. Source: the original's format table, plus
+    /// 31 and 33, which it doesn't know, worked out from the November 2026 cache:
+    /// - 33: all 44 files are 33x33 `.cube` film looks, B is exactly 33 x 33 x 33 x 4
+    ///   bytes, and read as R10G10B10A2 the first texel is black, red rises along the
+    ///   first row with green and blue near 0, and the last texel is (1021, 1017, 1014).
+    /// - 31: 933 lightmap `_vi.raw` volumes, a whole number of 4-byte texels per slice,
+    ///   whose bytes count through tile coordinates (`10 18 00 08`, `11 18 00 08`, ...).
+    ///
+    /// 32 (one GI volume, 4 bytes a texel) reads plausibly both as R11G11B10 floats and as
+    /// RGB9E5, so it stays unknown. 44 isn't in the current cache.
     pub fn from_code(code: u8) -> Option<Self> {
         Some(match code {
             0 | 1 => Self::Bc1,
@@ -48,6 +62,8 @@ impl PixelFormat {
             30 => Self::R16,
             34 => Self::Bc7,
             35 => Self::Bc6h,
+            31 => Self::Rgba8Uint,
+            33 => Self::Rgb10a2,
             _ => return None,
         })
     }
@@ -65,6 +81,8 @@ impl PixelFormat {
             Self::Bgra8 => 87,
             Self::A8 => 65,
             Self::R16 => 56,
+            Self::Rgb10a2 => 24,
+            Self::Rgba8Uint => 30,
         }
     }
 
@@ -73,14 +91,14 @@ impl PixelFormat {
         match self {
             Self::Bc1 | Self::Bc4 => Some(8),
             Self::Bc2 | Self::Bc3 | Self::Bc5 | Self::Bc6h | Self::Bc7 => Some(16),
-            Self::Bgra8 | Self::A8 | Self::R16 => None,
+            Self::Bgra8 | Self::A8 | Self::R16 | Self::Rgb10a2 | Self::Rgba8Uint => None,
         }
     }
 
     /// Bytes per pixel, for the uncompressed formats.
     pub fn pixel_bytes(self) -> Option<usize> {
         match self {
-            Self::Bgra8 => Some(4),
+            Self::Bgra8 | Self::Rgb10a2 | Self::Rgba8Uint => Some(4),
             Self::R16 => Some(2),
             Self::A8 => Some(1),
             _ => None,
@@ -253,7 +271,8 @@ mod tests {
         assert_eq!(PixelFormat::Bgra8.image_size(3, 2), 24);
         assert_eq!(PixelFormat::R16.image_size(4, 4), 32);
         assert_eq!(PixelFormat::A8.image_size(0, 7), 7);
-        assert_eq!(PixelFormat::from_code(31), None);
+        assert_eq!(PixelFormat::Rgb10a2.image_size(33, 33), 4356);
+        assert_eq!(PixelFormat::from_code(32), None);
     }
 
     #[test]
@@ -308,6 +327,17 @@ mod tests {
     }
 
     #[test]
+    fn lut_and_indirection_volumes() {
+        // A 33x33x33 grading LUT (format 33) and a 7x6x12 indirection volume (31), both
+        // one mip in B with 4 bytes a texel, as in the real cache.
+        let lut = Texture::assemble(&header(33, 1, 0, (33, 33), (33, 33), 33), false, &vec![0; 143_748], &[]).unwrap();
+        assert_eq!((lut.format, lut.width, lut.height, lut.shape), (PixelFormat::Rgb10a2, 33, 33, Shape::Volume(33)));
+        let vi = Texture::assemble(&header(31, 0, 1, (7, 6), (0, 0), 7), false, &[], &vec![0; 2016]).unwrap();
+        assert_eq!((vi.format, vi.shape), (PixelFormat::Rgba8Uint, Shape::Volume(12)));
+        assert_eq!((PixelFormat::Rgb10a2.dxgi(), PixelFormat::Rgba8Uint.dxgi()), (24, 30));
+    }
+
+    #[test]
     fn what_does_not_fit_is_refused() {
         let h = header(10, 3, 1, (8, 8), (4, 4), 8);
         let (b, f) = (vec![0; 84], vec![0; 256]);
@@ -318,7 +348,7 @@ mod tests {
         assert!(size_error(&[b.clone(), b.clone()].concat(), &f), "two elements in B, one in F");
         assert!(size_error(&[], &[]));
 
-        assert_eq!(Texture::assemble(&header(31, 3, 1, (8, 8), (4, 4), 8), false, &b, &f), Err(TextureError::UnknownFormat(31)));
+        assert_eq!(Texture::assemble(&header(32, 3, 1, (8, 8), (4, 4), 8), false, &b, &f), Err(TextureError::UnknownFormat(32)));
         assert_eq!(Texture::assemble(&header(10, 0, 0, (8, 8), (0, 0), 8), false, &b, &f), Err(TextureError::Empty));
         assert_eq!(Texture::assemble(&header(10, 3, 1, (0, 0), (4, 4), 8), false, &b, &f), Err(TextureError::Empty));
         assert!(matches!(

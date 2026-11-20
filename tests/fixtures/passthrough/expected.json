@@ -1,0 +1,180 @@
+{
+  "files": [
+    {
+      "package": "AnimRetarget",
+      "parts": {
+        "B": {
+          "compressed_size": 318,
+          "crc32": 36475321,
+          "size": 300
+        },
+        "H": {
+          "compressed_size": 67,
+          "crc32": 1133911149,
+          "size": 58
+        }
+      },
+      "path": "/EE/Interface/Menu.swf",
+      "stale": false,
+      "type": 9
+    },
+    {
+      "package": "Font",
+      "parts": {
+        "B": {
+          "compressed_size": 83,
+          "crc32": 2513668651,
+          "size": 72
+        },
+        "H": {
+          "compressed_size": 72,
+          "crc32": 2481839622,
+          "size": 63
+        }
+      },
+      "path": "/EE/Interface/AnchorMgr.lua",
+      "stale": false,
+      "type": 120
+    },
+    {
+      "package": "Font",
+      "parts": {
+        "B": {
+          "compressed_size": 19,
+          "crc32": 442593025,
+          "size": 10
+        },
+        "H": {
+          "compressed_size": 67,
+          "crc32": 562888008,
+          "size": 58
+        }
+      },
+      "path": "/EE/Scripts/Broken.lua",
+      "stale": false,
+      "type": 110
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 41,
+          "crc32": 4046453200,
+          "size": 32
+        },
+        "H": {
+          "compressed_size": 93,
+          "crc32": 1395672700,
+          "size": 94
+        }
+      },
+      "path": "/Lotus/Animations/FlightSuit/BowFlightMove",
+      "stale": false,
+      "type": 6
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "B": {
+          "compressed_size": 74,
+          "crc32": 3042952631,
+          "size": 64
+        },
+        "H": {
+          "compressed_size": 69,
+          "crc32": 887316805,
+          "size": 60
+        }
+      },
+      "path": "/Lotus/Interface/Hud.swf",
+      "stale": false,
+      "type": 10
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "H": {
+          "compressed_size": 64,
+          "crc32": 1188231269,
+          "size": 55
+        }
+      },
+      "path": "/Lotus/Sounds/Empty",
+      "stale": false,
+      "type": 6
+    },
+    {
+      "package": "Misc",
+      "parts": {
+        "H": {
+          "compressed_size": 164,
+          "crc32": 2339220185,
+          "size": 181
+        }
+      },
+      "path": "/Lotus/Sounds/Weapons/RifleFire",
+      "stale": false,
+      "type": 6
+    },
+    {
+      "package": "VideoTexture",
+      "parts": {
+        "F": {
+          "compressed_size": 524,
+          "crc32": 2869060648,
+          "size": 500
+        },
+        "H": {
+          "compressed_size": 62,
+          "crc32": 4244591817,
+          "size": 53
+        }
+      },
+      "path": "/Lotus/Fx/Cut.bk2",
+      "stale": false,
+      "type": 170
+    },
+    {
+      "package": "VideoTexture",
+      "parts": {
+        "B": {
+          "compressed_size": 25,
+          "crc32": 2077580913,
+          "size": 16
+        },
+        "F": {
+          "compressed_size": 1040,
+          "crc32": 2479794137,
+          "size": 1000
+        },
+        "H": {
+          "compressed_size": 64,
+          "crc32": 848302345,
+          "size": 55
+        }
+      },
+      "path": "/Lotus/Fx/Intro.bk2",
+      "stale": false,
+      "type": 170
+    },
+    {
+      "package": "VideoTextureStreaming",
+      "parts": {
+        "F": {
+          "compressed_size": 421,
+          "crc32": 1119653329,
+          "size": 400
+        },
+        "H": {
+          "compressed_size": 89,
+          "crc32": 2660048950,
+          "size": 79
+        }
+      },
+      "path": "/Lotus/Interface/AbilityVideos/Power1_s.bk2",
+      "stale": false,
+      "type": 170
+    }
+  ],
+  "name": "passthrough"
+}

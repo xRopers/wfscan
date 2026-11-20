@@ -123,6 +123,17 @@ impl Tree {
         }
     }
 
+    /// Every file inside `folder` at any depth, in path order.
+    pub fn files_under(&self, folder: usize) -> Vec<usize> {
+        let mut out = Vec::with_capacity(self.folders[folder].total);
+        let mut pending = vec![folder];
+        while let Some(id) = pending.pop() {
+            out.extend(&self.folders[id].files);
+            pending.extend(self.folders[id].folders.iter().rev());
+        }
+        out
+    }
+
     /// The folders `file` is inside, innermost first.
     pub fn ancestors(&self, file: usize) -> Vec<usize> {
         let mut out = Vec::new();
@@ -239,6 +250,13 @@ mod tests {
             open.set(&tree.folders[folder], true);
         }
         assert_eq!(lines(&tree, &files, &open), ["Misc/ (6)", "  EE/ (1)", "  Lotus/ (4)", "    Sounds/ (2)", "      Deep/ (1)", "        Low.wav", "      Tone.wav", "    A.x", "    B.x", "  Top", "Texture/ (1)"]);
+
+        // A folder's files at any depth, whether it is open or not.
+        let lotus = tree.folders.iter().position(|f| f.key == "Misc/Lotus").unwrap();
+        let mut under = tree.files_under(lotus);
+        under.sort();
+        assert_eq!(under, [0, 1, 2, 4]);
+        assert_eq!(tree.files_under(tree.top[0]).len(), 6);
     }
 
     #[test]

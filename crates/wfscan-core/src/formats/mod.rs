@@ -4,6 +4,7 @@
 
 pub mod audio;
 pub mod model;
+pub mod passthrough;
 pub mod reader;
 pub mod texture;
 
@@ -21,9 +22,10 @@ pub struct FormatOptions {
 impl Exporters {
     /// The exporters wfscan ships.
     pub fn builtin(options: &FormatOptions) -> Self {
-        Self::default()
+        let exporters = Self::default()
             .with(texture::TextureExporter { output: options.texture })
             .with(model::ModelExporter)
-            .with(audio::AudioExporter { output: options.audio, vorbis: options.vorbis.clone() })
+            .with(audio::AudioExporter { output: options.audio, vorbis: options.vorbis.clone() });
+        passthrough::PassthroughExporter::KINDS.into_iter().fold(exporters, |all, kind| all.with(passthrough::PassthroughExporter { kind }))
     }
 }

@@ -92,7 +92,7 @@ fn clicking_a_texture_shows_it() {
     select(&mut h, tex::CUBE);
     wait_for(&mut h, "cube map (first face shown)");
     select(&mut h, tex::NEW_FORMAT);
-    wait_for(&mut h, "pixel format 31 is not known");
+    wait_for(&mut h, "pixel format 32 is not known");
 }
 
 #[test]
@@ -243,6 +243,131 @@ fn the_tree_view_opens_folders_and_follows_the_filter() {
     h.get_by_label(tex::SPLIT);
 }
 
+/// A file's row in the list (the details pane shows the selected file's path as well,
+/// and is drawn first).
+fn row<'a>(h: &'a Harness<'static, App>, path: &'a str) -> egui_kittest::Node<'a> {
+    h.query_all_by_label(path).last().unwrap_or_else(|| panic!("no row for {path}"))
+}
+
+/// The paths of the selected files, sorted.
+fn selected_paths(h: &Harness<'static, App>) -> Vec<String> {
+    let app = h.state();
+    let mut paths: Vec<String> = app.selection.iter().map(|&i| app.session.files()[i].path.clone()).collect();
+    paths.sort();
+    paths
+}
+
+#[test]
+fn ctrl_and_shift_pick_several_files_and_they_export_together() {
+    let input = common::input();
+    let mut h = harness();
+    open(&mut h, &input);
+    h.state_mut().filter.text = "Sounds".into();
+    h.run_steps(2);
+
+    // A plain click picks one file; Ctrl+click adds another, and again takes it out.
+    row(&h, snd::TONE).click();
+    h.run_steps(2);
+    row(&h, snd::SPLIT).click_modifiers(egui::Modifiers::COMMAND);
+    h.run_steps(2);
+    assert_eq!(selected_paths(&h), [snd::SPLIT, snd::TONE]);
+    h.get_by_label("2 selected");
+    h.get_by_label("Export 2 selected…");
+    row(&h, snd::SPLIT).click_modifiers(egui::Modifiers::COMMAND);
+    h.run_steps(2);
+    assert_eq!(selected_paths(&h), [snd::TONE]);
+
+    // Shift+click takes every row between the last file clicked (with or without Ctrl)
+    // and this one.
+    let shown: Vec<String> = h.state().shown().iter().map(|&i| h.state().session.files()[i].path.clone()).collect();
+    assert_eq!(shown, [snd::VORBIS, snd::ADPCM, snd::SHORT, snd::SPLIT, snd::TONE]);
+    row(&h, snd::ADPCM).click_modifiers(egui::Modifiers::SHIFT);
+    h.run_steps(2);
+    assert_eq!(selected_paths(&h), [snd::ADPCM, snd::SHORT, snd::SPLIT]);
+    row(&h, snd::TONE).click();
+    h.run_steps(2);
+    row(&h, snd::SHORT).click_modifiers(egui::Modifiers::SHIFT);
+    h.run_steps(2);
+    assert_eq!(selected_paths(&h), [snd::SHORT, snd::SPLIT, snd::TONE]);
+    assert_eq!(h.state().session.files()[h.state().selected.unwrap()].path, snd::SHORT, "the details follow the click");
+
+    // Ctrl+A takes everything shown, Escape nothing; a narrower filter drops what it hides.
+    h.key_down_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(2);
+    assert_eq!(h.state().selection.len(), shown.len());
+    h.state_mut().filter.text = "Tone".into();
+    h.run_steps(2);
+    assert_eq!(selected_paths(&h), [snd::TONE]);
+    h.state_mut().filter.text = "Sounds".into();
+    h.run_steps(2);
+    h.key_down_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(2);
+    h.key_down(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().selection.is_empty());
+
+    // The selection exports on its own.
+    row(&h, snd::TONE).click();
+    h.run_steps(2);
+    row(&h, snd::SPLIT).click_modifiers(egui::Modifiers::COMMAND);
+    h.run_steps(2);
+    let out = input.dir.path().join("picked");
+    let picked = h.state().selection.clone();
+    h.state_mut().start_export(picked, out.clone());
+    h.run_steps(1);
+    settle(&mut h);
+    let (stats, _) = h.state().session.last_export.clone().unwrap();
+    assert_eq!((stats.selected, stats.ok), (2, 2));
+    assert!(out.join("Lotus").join("Sounds").join("Tone.wav").is_file());
+    assert!(!out.join("Lotus").join("Sounds").join("Short.wav").exists());
+}
+
+#[test]
+fn a_folder_of_the_tree_can_be_picked_or_exported() {
+    let input = common::input();
+    let mut h = harness();
+    open(&mut h, &input);
+    h.get_by_label("Tree").click();
+    h.run_steps(2);
+    h.get_by_label("Misc").click();
+    h.run_steps(2);
+    h.get_by_label("Lotus").click();
+    h.run_steps(2);
+
+    // Right-click a folder, even a closed one, to export all of it.
+    h.get_by_label("Sounds").click_secondary();
+    h.run_steps(2);
+    h.get_by_label("Export this folder (5 files)…");
+    h.get_by_label("Select its files").click();
+    h.run_steps(2);
+    let sounds: Vec<String> = selected_paths(&h);
+    assert_eq!(sounds.len(), 5);
+    assert!(sounds.iter().all(|p| p.starts_with("/Lotus/Sounds/")), "{sounds:?}");
+    assert!(!tree_lines(&h).contains(&"      Tone.wav".to_string()), "picking a folder doesn't open it");
+
+    // Ctrl+click on a folder whose files are all picked puts them back; plain click opens it.
+    h.get_by_label("Sounds").click_modifiers(egui::Modifiers::COMMAND);
+    h.run_steps(2);
+    assert!(h.state().selection.is_empty());
+    h.get_by_label("Sounds").click_modifiers(egui::Modifiers::COMMAND);
+    h.run_steps(2);
+    assert_eq!(h.state().selection.len(), 5);
+    h.get_by_label("Objects").click_modifiers(egui::Modifiers::COMMAND);
+    h.run_steps(2);
+    assert_eq!(h.state().selection.len(), 5 + 3);
+
+    // A file's own menu offers the whole selection.
+    // (Ctrl+click on Tone.wav, already picked, takes it out.)
+    h.get_by_label("Sounds").click();
+    h.run_steps(2);
+    h.get_by_label("Tone.wav").click_modifiers(egui::Modifiers::COMMAND);
+    h.run_steps(2);
+    h.get_by_label("Short.wav").click_secondary();
+    h.run_steps(2);
+    h.get_by_label("Export the 7 selected files…");
+    h.get_by_label("Export this file…");
+}
+
 #[test]
 fn hex_and_text_tabs_show_a_files_parts() {
     let input = common::input();
@@ -261,6 +386,28 @@ fn hex_and_text_tabs_show_a_files_parts() {
     h.get_by_label_contains("B (7.8 KiB)").click();
     h.run_steps(2);
     assert_eq!(h.state().raw_part, Part::B);
+
+    // The part on screen, or all of them, can be saved whole.
+    h.get_by_label("Save B…");
+    h.get_by_label("Save all as one…");
+    let file = h.state().session.files().iter().position(|f| f.path == snd::TONE).unwrap();
+    let entry = h.state().session.files()[file].clone();
+    let (h_size, b_size) = (entry.part(Part::H).unwrap().size as usize, entry.part(Part::B).unwrap().size as usize);
+    let dir = input.dir.path().join("saved");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (parts, name) in [(vec![Part::B], "Tone.wav.B"), (vec![Part::H], "Tone.wav.H"), (vec![Part::H, Part::B, Part::F], "Tone.wav.HBF")] {
+        h.state_mut().start_save_parts(file, parts, dir.join(name));
+        h.run_steps(1);
+        settle(&mut h);
+    }
+    let read = |name: &str| std::fs::read(dir.join(name)).unwrap();
+    assert_eq!(read("Tone.wav.B").len(), b_size);
+    assert_eq!(&read("Tone.wav.B")[..5], &[0xee; 5]);
+    assert_eq!(read("Tone.wav.H").len(), h_size);
+    assert_eq!(read("Tone.wav.HBF"), [read("Tone.wav.H"), read("Tone.wav.B")].concat(), "the file has no F part: H then B");
+    let log = &h.state().session.log.last().unwrap().text;
+    assert!(log.contains("Tone.wav.HBF") && log.contains(&format!("B 7.8 KiB at byte {h_size}")), "{log}");
+
     // The fixture puts five 0xee bytes before the samples.
     assert!(h.query_all_by_label_contains("000000  ee ee ee ee ee ").next().is_some());
 
@@ -314,6 +461,29 @@ fn export_marks_the_rows() {
     h.run_steps(2);
     h.get_by_label(&format!("{0} of {0} files are of a kind wfscan knows.", common::FILES));
     h.get_by_label("Failures, most common first");
+}
+
+#[test]
+fn unsupported_files_can_go_out_as_raw_parts() {
+    let input = common::input();
+    let mut h = harness();
+    open(&mut h, &input);
+    // The menu (the table's column is called Export too, and comes later).
+    h.query_all_by_label("Export").next().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label("Unsupported files as raw parts").click();
+    h.run_steps(2);
+    assert!(h.state().raw_unsupported);
+
+    let file = h.state().session.files().iter().position(|f| f.path == mdl::OTHER_TYPE).unwrap();
+    let out = input.dir.path().join("raw");
+    h.state_mut().start_export([file].into(), out.clone());
+    h.run_steps(1);
+    settle(&mut h);
+    let (stats, _) = h.state().session.last_export.clone().unwrap();
+    assert_eq!((stats.unsupported, stats.raw), (1, 1));
+    assert!(out.join("Lotus").join("Fx").join("Web").join("WebPatchMesh.H").is_file());
+    assert!(h.state().session.log.last().unwrap().text.contains("1 unsupported (1 written raw)"));
 }
 
 #[test]

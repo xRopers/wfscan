@@ -45,7 +45,7 @@ fn open_filter_and_export() {
     let (cache, manifest) = (loaded.cache.clone(), loaded.manifest.clone());
     let dir = out.clone();
     jobs.start("Exporting", move || {
-        let result = session::run_export(&cache, manifest, files, &dir, &FormatOptions { texture: TextureOutput::Png, ..Default::default() }, None);
+        let result = session::run_export(&cache, manifest, files, &dir, &FormatOptions { texture: TextureOutput::Png, ..Default::default() }, false, None);
         finish("Export", result, move |s, (manifest, stats)| s.set_exported(manifest, stats, dir))
     });
     jobs.wait(&mut session);

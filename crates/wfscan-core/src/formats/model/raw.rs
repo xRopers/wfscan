@@ -20,7 +20,10 @@
 //!
 //! Source: the original's model patterns and its description of each layout, for the
 //! variants a September 2026 Warframe cache uses most (102, 109, 281 and the `_dcm` and
-//! `_hlod` forms of 102 and 105).
+//! `_hlod` forms of 102 and 105). Plain 105 (`Level105`) was worked out from the November
+//! 2026 cache: the 109 header parses all 1,222 of them, its 0x67-byte gap is 102's
+//! gap / B counts / gap, and B (after PhysX and the 2-byte prefix) plus F is exactly
+//! 24 bytes a vertex and 2 an index.
 
 use crate::formats::reader::{ReadError, Reader};
 
@@ -35,6 +38,9 @@ pub enum Variant {
     Hlod102,
     /// Type 109: a level's static model with float positions and its own material list.
     Level109,
+    /// Type 105 under any other name: a level's model with the level header (and its
+    /// material list) but packed vertices split between B and F, as in 102.
+    Level105,
     /// Type 281: a rigged model.
     Rigged281,
 }
@@ -50,6 +56,7 @@ impl Variant {
             (_, s) if s.ends_with("_dcm") || s.ends_with("_hlod") || s.ends_with("_sm") => None,
             (102, _) => Some(Self::Static102),
             (109, _) => Some(Self::Level109),
+            (105, _) => Some(Self::Level105),
             (281, _) => Some(Self::Rigged281),
             _ => None,
         }
@@ -269,11 +276,15 @@ pub fn header(variant: Variant, data: &[u8]) -> Result<ModelHeader, ReadError> {
             }
             (h.vertex_count_b, h.index_count_b) = (h.vertex_count, h.index_count);
         }
-        Variant::Level109 => {
+        Variant::Level109 | Variant::Level105 => {
             skip_physics(r, false)?;
             r.skip(0x28, "header")?;
             counts(r, &mut h)?;
-            r.skip(0x67, "header")?;
+            // The same B counts as 102's, at the same place.
+            r.skip(0x22, "header")?;
+            h.vertex_count_b = r.u32("B vertex count")?;
+            h.index_count_b = r.u32("B index count")?;
+            r.skip(0x3d, "header")?;
             h.mesh_infos = mesh_infos(r)?;
             skip_array(r, 1000, 2, "u16 list")?;
             h.material_paths = r.strings(100, "material list")?;
@@ -281,7 +292,9 @@ pub fn header(variant: Variant, data: &[u8]) -> Result<ModelHeader, ReadError> {
             h.physx_lengths = physx_lengths(r)?;
             h.errors = r.strings(1000, "error list")?;
             r.finish()?;
-            (h.vertex_count_b, h.index_count_b) = (h.vertex_count, h.index_count);
+            if variant == Variant::Level109 || h.vertex_count_b == 0 {
+                (h.vertex_count_b, h.index_count_b) = (h.vertex_count, h.index_count);
+            }
         }
         Variant::Rigged281 => {
             skip_physics(r, true)?;
@@ -414,7 +427,7 @@ fn body_b(r: &mut Reader, variant: Variant, h: &ModelHeader, body: &mut ModelBod
         r.skip(length as usize, "PhysX data")?;
     }
     match variant {
-        Variant::Static102 => {}
+        Variant::Static102 | Variant::Level105 => {}
         Variant::Dcm102 | Variant::Hlod102 => r.skip(64 * h.bone_count as usize, "bone data")?,
         Variant::Level109 => {
             r.skip(64 * h.bone_count as usize, "bone data")?;
@@ -452,11 +465,11 @@ fn body_b(r: &mut Reader, variant: Variant, h: &ModelHeader, body: &mut ModelBod
     // Not in the original's description: static models with a morph count carry 8 bytes
     // per morph after their indices (595 models of the September 2026 cache; with the
     // data placed before the indices instead, 548 of them index past their vertices).
-    if variant == Variant::Static102 {
+    if matches!(variant, Variant::Static102 | Variant::Level105) {
         r.skip(h.morph_count as usize * 8, "morph data")?;
     }
     // The layouts whose end is known must end here.
-    if matches!(variant, Variant::Static102 | Variant::Rigged281) {
+    if matches!(variant, Variant::Static102 | Variant::Level105 | Variant::Rigged281) {
         r.finish()?;
     }
     Ok(())
@@ -497,7 +510,8 @@ mod tests {
         assert_eq!(Variant::of(102, "/Lotus/Levels/Room/Thing_hlod"), Some(Variant::Hlod102));
         assert_eq!(Variant::of(109, "/Lotus/Docs/Loadouts/0_c.fbx"), Some(Variant::Level109));
         assert_eq!(Variant::of(281, "/Lotus/Characters/Tenno/Excalibur/ExcaliburBody_skel.fbx"), Some(Variant::Rigged281));
-        for (type_id, path) in [(108, "/A/B_dcm.fbx"), (105, "/A/B.fbx"), (106, "/A/B_sm.fbx"), (299, "/A/B.fbx"), (166, "/A/T.terrain")] {
+        assert_eq!(Variant::of(105, "/Lotus/Levels/Backdrops/SaturnRegionShip/0_a.fbx"), Some(Variant::Level105));
+        for (type_id, path) in [(108, "/A/B_dcm.fbx"), (106, "/A/B_sm.fbx"), (299, "/A/B.fbx"), (166, "/A/T.terrain")] {
             assert_eq!(Variant::of(type_id, path), None, "{type_id} {path}");
         }
     }

@@ -146,6 +146,8 @@ mod tests {
             (PixelFormat::Bc7, 4, 4, 3, Shape::Flat, "BC7_UNORM"),
             (PixelFormat::Bc2, 16, 16, 1, Shape::Flat, "BC2_UNORM"),
             (PixelFormat::Bc4, 16, 8, 5, Shape::Flat, "BC4_UNORM"),
+            (PixelFormat::Rgb10a2, 33, 33, 1, Shape::Volume(33), "R10G10B10A2_UNORM"),
+            (PixelFormat::Rgba8Uint, 7, 6, 1, Shape::Volume(12), "R8G8B8A8_UINT"),
         ];
         for (format, width, height, mips, shape, name) in cases {
             let dds = write(&texture(format, width, height, mips, shape));

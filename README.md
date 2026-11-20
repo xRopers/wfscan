@@ -83,10 +83,12 @@ wfscan info    <Cache.Windows>
 wfscan index   <Cache.Windows> [-o manifest.json] [--hash] [--full-headers] [--no-stale]
 wfscan list    -m manifest.json [--package P] [--path PREFIX] [--type N] [--kind K] [--status S] [--failed] [--stale]
 wfscan export  <Cache.Windows> -m manifest.json -d out/ [--package P] [--path PREFIX] [--kinds K,K]
-               [--texture-format dds|png] [--audio-format native|wav] [--changed-since old.json] [--dry-run] [--force]
+               [--texture-format dds|png] [--audio-format native|wav] [--changed-since old.json]
+               [--raw-unsupported] [--dry-run] [--force]
 wfscan raw     <Cache.Windows> --path FILE|FOLDER/ [--package P] -d out/
 wfscan diff    old.json new.json [--list]
 wfscan report  -m manifest.json [--errors N] [--unknown]
+wfscan mcp     <Cache.Windows> [-m manifest.json]
 ```
 
 Every command takes `--json`. `-j N` sets the number of threads.
@@ -95,7 +97,30 @@ Every command takes `--json`. `-j N` sets the number of threads.
 - **Exports are incremental.** A file that was exported before, and whose output is still there, is skipped. After a game update, index again and pass the old manifest as `--changed-since` to export only what changed. `--force` exports everything again.
 - **`--dry-run`** runs the exporters and reports sizes without writing anything.
 - **`raw`** writes a file's decompressed parts untouched, for working out formats.
+- **`--raw-unsupported`** also writes files wfscan can't convert yet, as their decompressed parts (`name.H`, `name.B`, `name.F`). They still count as unsupported.
 - **wfscan refuses to read a cache the game has open for writing** (`--allow-in-use` overrides). Close the game and its launcher first.
+
+## Use it from an AI assistant (MCP)
+
+`wfscan mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on stdin/stdout, so Claude Code, Claude Desktop or another MCP client can search the cache, look at raw bytes and export. To add it to Claude Code:
+
+```bash
+claude mcp add wfscan -- C:\path\to\wfscan.exe --oodle-dll C:\path\to\oo2core_9_win64.dll mcp C:\path\to\Warframe\Cache.Windows
+```
+
+For Claude Desktop or other clients, the command is `wfscan.exe` with the arguments `--oodle-dll <dll> mcp <Cache.Windows>`. Add `-m manifest.json` to keep export results between sessions.
+
+| Tool | What it does |
+|---|---|
+| `info` | The game, packages, file counts and sizes |
+| `find` | Search files by part of the path, path prefix, package, kind, type number or export status |
+| `file` | One file's details: parts and sizes, type, source paths, attribute text, last export |
+| `read_bytes` | Part of a file's H, B or F data, decompressed, as a hex dump or text (up to 64 KiB at a time) |
+| `find_bytes` | Where a byte pattern occurs in one part |
+| `export` | Export by paths, folder, package or kinds, with the same formats and options as `wfscan export`, and a dry run |
+| `report` | Coverage per file type, and the most common failures |
+
+The cache is indexed when the first tool needs it (under 2 seconds) and kept for the session. As everywhere else, the cache is only read; `export` writes only into the folder it is given, which must be an absolute path.
 
 ## What works
 
@@ -104,16 +129,18 @@ Measured on the September 2026 cache (446,923 files) with a Core Ultra 9 285K.
 | | Files | Exported | Notes |
 |---|---|---|---|
 | Index | 446,923 | | 1.6 s; with `--hash` (reads and checksums all 124 GiB) 22 s |
-| Textures | 129,645 | 128,668 | 977 are in pixel formats wfscan doesn't know. 98 GiB as DDS |
+| Textures | 129,701 | 129,700 | November 2026 cache. One file is in a pixel format wfscan doesn't know. 98 GiB as DDS |
 | Sounds | 88,780 | 88,780 | 9.5 GiB in their own formats, 84 GiB as WAV |
 | Models | 57,698 | 50,753 | see below. 4.9 GiB |
+| Sound banks | 44,417 | 43,091 | November 2026 cache. The rest are empty stubs, or not banks |
+| Scripts, videos, Flash | 6,224 | 6,224 | November 2026 cache. 880 MiB |
 
 ### Textures
 
 - **DDS** is exact: the game's compressed data behind a standard header (always the DX10 one), with every mip and every cube face, array layer or volume slice.
-- **PNG** is the top mip decoded to 8-bit RGBA, one file per face, layer or slice. HDR textures are clamped, so use DDS for those.
-- BC1 to BC7, BGRA8, A8 and R16 are read. Many textures are stored at half or a quarter of the size they were made at; you get the stored size.
-- Not checked: the order of cube faces, and sRGB against linear.
+- **PNG** is the top mip decoded to 8-bit RGBA, one file per face, layer or slice. HDR textures (BC6H, such as the lighting cube maps) come out as Radiance `.hdr` instead, so brightness above white is kept.
+- BC1 to BC7, BGRA8, A8, R16, R10G10B10A2 (colour grading LUTs) and RGBA8 integer (lightmap indirection volumes) are read. Many textures are stored at half or a quarter of the size they were made at; you get the stored size.
+- Not fully checked: the order of cube faces (+Y is the sky and -Y the floor, as expected; the X and Z faces aren't confirmed), and sRGB against linear.
 
 ### Sounds
 
@@ -124,17 +151,26 @@ Measured on the September 2026 cache (446,923 files) with a Core Ultra 9 285K.
 
 ### Models
 
-- Static, level and rigged models (types 102, 109 and 281) export with positions, two sets of texture coordinates, baked ambient occlusion (as `_OCCLUSION`), and for rigged models the skeleton and skin weights.
+- Static, level and rigged models (types 102, 105, 109 and 281) export with positions, two sets of texture coordinates, baked ambient occlusion (as `_OCCLUSION`), and for rigged models the skeleton and skin weights.
 - **No normals or tangents**: how the game packs them isn't worked out. Viewers compute their own.
 - **Materials are names only.** Each mesh's material path is in the glTF material's `extras.path`; no textures are linked yet.
 - Only the most detailed level of each mesh is exported.
 - 6,890 models are `unsupported`: 2,323 hold only collision data, and the rest are of types with no reader yet (terrain and some packed layouts). 55 fail.
 
+### Sound banks, scripts, videos and Flash
+
+These are copied out as they are, after a check that each file is what its type says:
+
+- **Sound banks** (the extensionless files under `Sounds`) become `.txt`: which samples a sound plays, at what gain and pitch, and how. The samples themselves are the sounds above.
+- **Scripts** (`.lua`) are compiled bytecode and go out as `.luac`. They aren't decompiled.
+- **Videos** (`.bk2`) are whole Bink files; RAD's Bink tools and some players open them.
+- **Flash** (`.swf`) are the game's interface movies.
+
 ### Not yet
 
 Materials, levels and landscapes, shaders, animations, `Packages.bin` and `Languages.bin`. Soulframe's cache should read the same way but hasn't been tried, and its models have no reader. Warframe caches from before the 2020 "Ensmallening" are recognised and refused.
 
-`wfscan report -m manifest.json --unknown` lists the file types wfscan has no name for, with counts and sample paths.
+`wfscan report -m manifest.json --unknown` lists the file types wfscan has no name for, with counts and sample paths. [ROADMAP.md](ROADMAP.md) lays out, in phases, how the types that don't export yet will get readers.
 
 ## The manifest
 

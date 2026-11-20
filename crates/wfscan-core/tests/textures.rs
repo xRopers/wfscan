@@ -1,4 +1,4 @@
-//! Texture export, checked by reading the results back with texscan: on the synthetic
+﻿//! Texture export, checked by reading the results back with texscan: on the synthetic
 //! `textures` fixture, where every pixel is known, and on a real cache, where each mip
 //! must look like the one above it.
 #![cfg(feature = "png")]
@@ -105,7 +105,7 @@ fn dds_files_hold_every_image_in_the_right_place() {
     }
 
     let unknown = s.record(tex::NEW_FORMAT);
-    assert_eq!((unknown.status, unknown.reason.as_deref()), (Status::Unsupported, Some("pixel format 31 is not known")));
+    assert_eq!((unknown.status, unknown.reason.as_deref()), (Status::Unsupported, Some("pixel format 32 is not known")));
     let short = s.record(tex::SHORT);
     assert_eq!(short.status, Status::Failed);
     let reason = short.reason.as_deref().unwrap();
@@ -116,7 +116,7 @@ fn dds_files_hold_every_image_in_the_right_place() {
 fn pngs_are_the_top_mip_of_each_element() {
     let s = exported(TextureOutput::Png);
     assert_eq!((s.stats.ok, s.stats.unsupported, s.stats.failed), (11, 1, 1));
-    assert_eq!(s.record(tex::SPLIT).exporter.as_deref(), Some("texture-png@1"));
+    assert_eq!(s.record(tex::SPLIT).exporter.as_deref(), Some("texture-png@2"));
 
     // path, output stem, element suffixes, width, height
     let none: &[&str] = &[""];

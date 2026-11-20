@@ -2,9 +2,11 @@
 //!
 //! DDS output is exact: the game's own compressed data with a standard header, every mip
 //! and every face, layer or slice. PNG output is the top mip decoded to 8-bit RGBA, one
-//! file per face, layer or slice; HDR data (BC6H) is clamped to 0-1, so use DDS for those.
+//! file per face, layer or slice; HDR data (BC6H) goes out as Radiance `.hdr` instead, so
+//! its range isn't clamped.
 
 pub mod dds;
+pub mod hdr;
 pub mod model;
 pub mod raw;
 
@@ -97,8 +99,12 @@ impl Exporter for TextureExporter {
         }
     }
 
+    /// PNG output is version 2 since BC6H textures went from clamped PNGs to `.hdr`.
     fn version(&self) -> u32 {
-        1
+        match self.output {
+            TextureOutput::Dds => 1,
+            TextureOutput::Png => 2,
+        }
     }
 
     fn kind(&self) -> Kind {
@@ -120,6 +126,14 @@ impl Exporter for TextureExporter {
 fn pngs(texture: &Texture, dds: &[u8], path: &str) -> Result<Vec<Output>, ExportError> {
     let info = texscan_core::formats::dds::parse(dds).map_err(|e| ExportError::failed(format!("the DDS written doesn't parse: {e:?}")))?;
     let mut outputs = Vec::new();
+    if texture.format == PixelFormat::Bc6h {
+        for (image, suffix) in texscan_core::png_images(&info) {
+            let element = image.layer.max(image.slice);
+            let pixels = bc6h_top_mip(texture, element);
+            outputs.push(Output { path: output_path(path, &suffix, "hdr"), data: hdr::write(texture.width, texture.height, &pixels) });
+        }
+        return Ok(outputs);
+    }
     for (image, suffix) in texscan_core::png_images(&info) {
         let mut decoded = texscan_core::decode(dds, &info, image).map_err(|e| ExportError::failed(format!("decoding {:?}: {e}", texture.format)))?;
         if texture.format == PixelFormat::A8 {
@@ -131,6 +145,30 @@ fn pngs(texture: &Texture, dds: &[u8], path: &str) -> Result<Vec<Output>, Export
         outputs.push(Output { path: output_path(path, &suffix, "png"), data: texscan_core::encode_png(&decoded) });
     }
     Ok(outputs)
+}
+
+/// The top mip of one element of a BC6H texture as RGB floats, rows top to bottom.
+#[cfg(feature = "png")]
+fn bc6h_top_mip(texture: &Texture, element: u32) -> Vec<[f32; 3]> {
+    let chain: usize = (0..texture.mips).map(|m| {
+        let (w, h) = texture.mip_size(m);
+        texture.format.image_size(w, h)
+    }).sum();
+    let (w, h) = (texture.width as usize, texture.height as usize);
+    let top = &texture.data[element as usize * chain..][..texture.format.image_size(texture.width, texture.height)];
+    let mut pixels = vec![[0.0f32; 3]; w * h];
+    let mut block = [0.0f32; 48];
+    for (i, bytes) in top.as_chunks::<16>().0.iter().enumerate() {
+        let (bx, by) = (i % w.div_ceil(4) * 4, i / w.div_ceil(4) * 4);
+        bcdec_rs::bc6h_float(bytes, &mut block, 12, false);
+        for y in 0..4.min(h - by) {
+            for x in 0..4.min(w - bx) {
+                let c = &block[y * 12 + x * 3..][..3];
+                pixels[(by + y) * w + bx + x] = [c[0], c[1], c[2]];
+            }
+        }
+    }
+    pixels
 }
 
 /// One decoded image of a texture: 8-bit RGBA, rows top to bottom.
@@ -175,6 +213,35 @@ fn pngs(_texture: &Texture, _dds: &[u8], _path: &str) -> Result<Vec<Output>, Exp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The float decode puts every block of the right element in the right place: it
+    /// agrees with texscan's 8-bit decode of the same DDS wherever that isn't clamped.
+    #[cfg(feature = "png")]
+    #[test]
+    #[allow(clippy::needless_range_loop)]
+    fn bc6h_floats_match_texscan() {
+        let (width, height) = (12u32, 8u32);
+        let chain = PixelFormat::Bc6h.image_size(12, 8) + PixelFormat::Bc6h.image_size(6, 4);
+        let data: Vec<u8> = (0..chain * 2).map(|i| (i * 7 + i / 16 * 13) as u8).collect();
+        let texture = Texture { format: PixelFormat::Bc6h, width, height, mips: 2, shape: Shape::Array(2), data };
+        let file = dds::write(&texture);
+        let info = texscan_core::formats::dds::parse(&file).unwrap();
+        for element in 0..2 {
+            let floats = bc6h_top_mip(&texture, element);
+            let bytes = texscan_core::decode(&file, &info, texscan_core::Subresource { layer: element, mip: 0, slice: 0 }).unwrap();
+            let mut compared = 0;
+            for (i, f) in floats.iter().enumerate() {
+                for c in 0..3 {
+                    if (0.01..0.99).contains(&f[c]) {
+                        let expected = f32::from(bytes.rgba[i * 4 + c]) / 255.0;
+                        assert!((f[c] - expected).abs() < 2.0 / 255.0, "element {element} pixel {i} channel {c}: {} vs {expected}", f[c]);
+                        compared += 1;
+                    }
+                }
+            }
+            assert!(compared > 20, "element {element}: only {compared} values in range to compare");
+        }
+    }
 
     #[test]
     fn output_paths() {

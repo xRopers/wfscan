@@ -29,10 +29,18 @@ pub enum Kind {
     Landscape,
     Shader,
     Icon,
+    /// Bink videos.
+    Video,
+    /// Flash (SWF) user interface movies.
+    Flash,
+    /// Compiled Lua scripts.
+    Script,
+    /// Sound banks: which samples a sound plays, and how.
+    SoundBank,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Model,
         Kind::Texture,
         Kind::Material,
@@ -42,6 +50,10 @@ impl Kind {
         Kind::Landscape,
         Kind::Shader,
         Kind::Icon,
+        Kind::Video,
+        Kind::Flash,
+        Kind::Script,
+        Kind::SoundBank,
     ];
 
     pub fn name(self) -> &'static str {
@@ -55,6 +67,10 @@ impl Kind {
             Kind::Landscape => "landscape",
             Kind::Shader => "shader",
             Kind::Icon => "icon",
+            Kind::Video => "video",
+            Kind::Flash => "flash",
+            Kind::Script => "script",
+            Kind::SoundBank => "sound-bank",
         }
     }
 }
@@ -136,6 +152,17 @@ const RULES: &[Rule] = &[
     rule(W,  Category::ShaderPermutation, Kind::Shader, &[32]),
 
     rule(W,  Category::Misc, Kind::Icon, &[3]),
+
+    // Seen, November 2026 cache; checked file by file by the passthrough exporter.
+    // 231 `.bk2` files, each a whole Bink 2 file in F.
+    rule(W,  Category::VideoTexture, Kind::Video, &[170]),
+    // 508 `.swf` files, a whole SWF in B.
+    rule(W,  Category::AnimRetarget, Kind::Flash, &[9]),
+    rule(W,  Category::Misc, Kind::Flash, &[10]),
+    // 5,478 `.lua` files, compiled, in B.
+    rule(W,  Category::Font, Kind::Script, &[110, 120]),
+    // 44,417 extensionless files under Sounds: the whole bank is the attribute text.
+    rule(W,  Category::Misc, Kind::SoundBank, &[6]),
 ];
 
 /// The kind of asset a type number stands for, if wfscan knows.

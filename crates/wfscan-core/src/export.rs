@@ -4,6 +4,10 @@
 //! - One bad file never stops a run. An exporter's error, or a panic inside it, becomes a
 //!   `failed` record for that file.
 //! - A file nothing can export is `unsupported`, with what is missing as the reason.
+//!   With [`ExportOptions::raw_unsupported`] its decompressed parts are written as they
+//!   are (`<path>.H`, `.B`, `.F`, as `wfscan raw` names them) by the `raw` pseudo-exporter;
+//!   it stays `unsupported`, so the coverage report still shows what has no reader, but
+//!   its record lists the files.
 //! - A file whose earlier export still stands is `skipped`: same contents, same exporter
 //!   version, outputs still on disk. "Earlier" is this manifest's own record, or the
 //!   record in the manifest given as `previous` (`--changed-since`) for files that
@@ -150,7 +154,12 @@ pub struct ExportOptions {
     pub dry_run: bool,
     /// Export again even where an earlier export still stands.
     pub force: bool,
+    /// Write the decompressed parts of files that would be `unsupported`.
+    pub raw_unsupported: bool,
 }
+
+/// The name and version recorded for files written as raw parts.
+pub const RAW_EXPORTER: &str = "raw@1";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct ExportStats {
@@ -160,6 +169,8 @@ pub struct ExportStats {
     pub failed: u64,
     pub unsupported: u64,
     pub skipped: u64,
+    /// Of the unsupported files, those written as raw parts.
+    pub raw: u64,
     /// Output files written (or, in a dry run, that would have been), and their bytes.
     pub outputs: u64,
     pub bytes: u64,
@@ -196,6 +207,71 @@ impl Run<'_> {
 
     /// Export one file. Returns its record and the bytes of output.
     fn export_one(&self, file: &FileEntry, category: Category, kind: Option<Kind>, earlier: Option<&ExportRecord>) -> (ExportRecord, u64) {
+        let (record, bytes) = self.export_with_reader(file, category, kind, earlier);
+        if record.status == Status::Unsupported && self.opts.raw_unsupported {
+            return self.export_raw(file, record.reason.unwrap_or_default());
+        }
+        (record, bytes)
+    }
+
+    /// The parts of `file` in the cache, checked against what the manifest says.
+    fn find_parts<'p>(&self, file: &FileEntry, package: &'p Package) -> Result<[Option<&'p TocEntry>; 3], String> {
+        let mut parts = [None; 3];
+        for part in Part::ALL {
+            let Some(listed) = file.part(part) else { continue };
+            match package.part(part).and_then(|f| f.find(&file.path)) {
+                Some(e) if (e.offset, e.compressed_size, e.size) == (listed.offset, listed.compressed_size, listed.size) => {
+                    parts[part as usize] = Some(e);
+                }
+                _ => return Err(format!("{part}: the cache no longer matches the manifest")),
+            }
+        }
+        Ok(parts)
+    }
+
+    fn write(&self, outputs: &[Output]) -> Result<u64, String> {
+        let mut bytes = 0;
+        for output in outputs {
+            let target = internal_path_under(self.out_dir, &output.path).map_err(|e| e.to_string())?;
+            if !self.opts.dry_run {
+                write_atomic(&target, |w| w.write_all(&output.data)).map_err(|e| e.to_string())?;
+            }
+            bytes += output.data.len() as u64;
+        }
+        Ok(bytes)
+    }
+
+    /// Write an unsupported file's decompressed parts as they are. The record keeps the
+    /// reason nothing could read it; a part that can't be read makes it `failed`.
+    fn export_raw(&self, file: &FileEntry, reason: String) -> (ExportRecord, u64) {
+        let tag = Some(RAW_EXPORTER.to_string());
+        let failed = |why: String| (record(Status::Failed, tag.clone(), why), 0);
+        let package = self.cache.package(&file.package).expect("the manifest's packages were checked against the cache");
+        let parts = match self.find_parts(file, package) {
+            Ok(parts) => parts,
+            Err(e) => return failed(e),
+        };
+        let mut outputs = Vec::new();
+        for part in Part::ALL {
+            let Some(entry) = parts[part as usize] else { continue };
+            match package.part(part).expect("a listed part exists").read(entry, self.oodle) {
+                Ok((data, _)) => outputs.push(Output { path: format!("{}.{part}", file.path), data }),
+                Err(e) => return failed(format!("{part}: {}", cause(&e))),
+            }
+        }
+        if outputs.is_empty() {
+            return failed("the file has no parts".into());
+        }
+        let bytes = match self.write(&outputs) {
+            Ok(bytes) => bytes,
+            Err(e) => return failed(e),
+        };
+        let outputs = outputs.into_iter().map(|o| o.path).collect();
+        (ExportRecord { status: Status::Unsupported, exporter: tag, reason: Some(reason), outputs }, bytes)
+    }
+
+    /// Export one file with the exporter for its kind.
+    fn export_with_reader(&self, file: &FileEntry, category: Category, kind: Option<Kind>, earlier: Option<&ExportRecord>) -> (ExportRecord, u64) {
         let Some(header_entry) = &file.header else {
             return (record(Status::Unsupported, None, "no common header"), 0);
         };
@@ -218,17 +294,10 @@ impl Run<'_> {
 
         let failed = |reason: String| (record(Status::Failed, tag.clone(), reason), 0);
         let package = self.cache.package(&file.package).expect("the manifest's packages were checked against the cache");
-        let mut parts = [None; 3];
-        for part in Part::ALL {
-            let Some(listed) = file.part(part) else { continue };
-            let found = package.part(part).and_then(|f| f.find(&file.path));
-            match found {
-                Some(e) if (e.offset, e.compressed_size, e.size) == (listed.offset, listed.compressed_size, listed.size) => {
-                    parts[part as usize] = Some(e);
-                }
-                _ => return failed(format!("{part}: the cache no longer matches the manifest")),
-            }
-        }
+        let parts = match self.find_parts(file, package) {
+            Ok(parts) => parts,
+            Err(e) => return failed(e),
+        };
         let Some(h_entry) = parts[Part::H as usize] else {
             return failed("the file has no H part".into());
         };
@@ -258,19 +327,10 @@ impl Run<'_> {
             Ok(Err(ExportError::Failed(reason))) => return failed(reason),
             Err(panic) => return failed(panic_message(panic)),
         };
-        let mut bytes = 0;
-        for output in &outputs {
-            let target = match internal_path_under(self.out_dir, &output.path) {
-                Ok(target) => target,
-                Err(e) => return failed(e.to_string()),
-            };
-            if !self.opts.dry_run
-                && let Err(e) = write_atomic(&target, |w| w.write_all(&output.data))
-            {
-                return failed(e.to_string());
-            }
-            bytes += output.data.len() as u64;
-        }
+        let bytes = match self.write(&outputs) {
+            Ok(bytes) => bytes,
+            Err(e) => return failed(e),
+        };
         let outputs = outputs.into_iter().map(|o| o.path).collect();
         (ExportRecord { status: Status::Ok, exporter: tag, reason: None, outputs }, bytes)
     }
@@ -371,7 +431,14 @@ pub fn export(
                 stats.bytes += bytes;
             }
             Status::Failed => stats.failed += 1,
-            Status::Unsupported => stats.unsupported += 1,
+            Status::Unsupported => {
+                stats.unsupported += 1;
+                if !record.outputs.is_empty() {
+                    stats.raw += 1;
+                    stats.outputs += record.outputs.len() as u64;
+                    stats.bytes += bytes;
+                }
+            }
             Status::Skipped => stats.skipped += 1,
         }
         manifest.files[i].export = Some(record);

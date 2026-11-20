@@ -162,6 +162,45 @@ fn every_file_gets_a_status() {
 }
 
 #[test]
+fn unsupported_files_can_be_written_as_raw_parts() {
+    let fixture = mixed();
+    let mut s = setup(&fixture);
+    let exporters = Exporters::default().with(models(1));
+    let raw = ExportOptions { raw_unsupported: true, ..Default::default() };
+
+    // A dry run writes nothing but counts what it would.
+    let stats = s.export(&exporters, None, &ExportOptions { dry_run: true, ..raw.clone() });
+    assert_eq!((counts(&stats), stats.raw, stats.outputs), ((9, 2, 4, 3, 0), 3, 4 + 3 * 2));
+    assert!(!s.out().join("Lotus").join("Scripts").exists());
+
+    let stats = s.export(&exporters, None, &raw);
+    assert_eq!((counts(&stats), stats.raw), ((9, 2, 4, 3, 0), 3));
+    // All three ways of being unsupported: no reader for the type, no exporter for the
+    // kind, and an exporter that turned the file down. Each keeps its status and reason.
+    for (path, reason, fx_file) in [
+        ("/Lotus/Scripts/Thing.lua", "no reader for type 22", &fixture.packages[0].files[7]),
+        ("/Lotus/Textures/T.png", "no texture exporter yet", &fixture.packages[1].files[0]),
+        ("/Lotus/Models/Variant.fbx", "no reader for this model layout", &fixture.packages[0].files[3]),
+    ] {
+        let r = s.record(path);
+        assert_eq!((r.status, r.exporter.as_deref(), r.reason.as_deref()), (Status::Unsupported, Some(wfscan_core::RAW_EXPORTER), Some(reason)));
+        assert_eq!(r.outputs, [format!("{path}.H"), format!("{path}.B")]);
+        for (i, part) in ["H", "B"].iter().enumerate() {
+            let written = std::fs::read(wfscan_core::output::internal_path_under(&s.out(), &format!("{path}.{part}")).unwrap()).unwrap();
+            assert_eq!(written, fx_file.parts[i].as_ref().unwrap().data, "{path}.{part} is the decompressed part");
+        }
+    }
+    // The report still counts them as unsupported.
+    let report = report(&s.manifest);
+    assert_eq!(report.types.iter().map(|t| t.unsupported).sum::<u64>(), 3);
+
+    // Without the option they are left alone again.
+    let stats = s.export(&exporters, None, &ExportOptions::default());
+    assert_eq!((stats.unsupported, stats.raw), (3, 0));
+    assert!(s.record("/Lotus/Scripts/Thing.lua").outputs.is_empty());
+}
+
+#[test]
 fn a_second_run_skips_what_still_stands() {
     let mut s = setup(&mixed());
     let exporter = models(1);

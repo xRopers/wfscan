@@ -14,7 +14,9 @@ default = ["oodle", "png", "audio"]
 oodle = ["dep:zscan-core"]
 # PNG output for textures, decoded by texscan-core. Without it textures export as DDS only.
 # texscan-core includes basisu (Apache-2.0 only), which makes binaries effectively GPL-3.
-png = ["dep:texscan-core"]
+# BC6H textures go out as Radiance .hdr instead, decoded to floats by bcdec_rs (MIT; the
+# same version texscan-core uses).
+png = ["dep:texscan-core", "dep:bcdec_rs"]
 # Decoding sounds to PCM, for WAV export and the GUI's player: Vorbis with lewton (MIT or
 # Apache-2.0), Opus with ropus (BSD-3-Clause), both pure Rust. Without it sounds still
 # export in their own formats, but Vorbis header sets are picked without a trial decode.
@@ -27,6 +29,7 @@ rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+bcdec_rs = { version = "0.2", optional = true }
 lewton = { version = "0.10", optional = true }
 ropus = { version = "0.12", optional = true }
 texscan-core = { workspace = true, optional = true }

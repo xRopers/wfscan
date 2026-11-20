@@ -8,8 +8,9 @@ use std::sync::Arc;
 use anyhow::Context;
 use wfscan_core::{
     Cache, Category, ExportOptions, ExportStats, Exporters, FileEntry, FormatOptions, IndexOptions, IndexStats, Kind, Manifest, Oodle,
-    OodleDecoder, Status, export, index,
+    OodleDecoder, Part, Status, export, index,
 };
+use wfscan_core::output::write_atomic;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -113,8 +114,9 @@ impl Session {
     pub fn set_exported(&mut self, manifest: Manifest, stats: ExportStats, dir: PathBuf) {
         let Some(loaded) = &mut self.loaded else { return };
         loaded.manifest = manifest;
+        let raw = if stats.raw > 0 { format!(" ({} written raw)", stats.raw) } else { String::new() };
         self.info(format!(
-            "exported to {}: {} ok, {} failed, {} unsupported, {} skipped; {} files, {:.1} MiB in {:.1} s",
+            "exported to {}: {} ok, {} failed, {} unsupported{raw}, {} skipped; {} files, {:.1} MiB in {:.1} s",
             dir.display(),
             stats.ok,
             stats.failed,
@@ -181,13 +183,41 @@ pub fn run_export(
     files: HashSet<usize>,
     out_dir: &Path,
     formats: &FormatOptions,
+    raw_unsupported: bool,
     oodle: Option<Arc<Oodle>>,
 ) -> anyhow::Result<(Manifest, ExportStats)> {
     let decoder = oodle.as_deref().map(|o| o as &dyn OodleDecoder);
     let exporters = Exporters::builtin(formats);
-    let opts = ExportOptions { files: Some(files), ..Default::default() };
+    let opts = ExportOptions { files: Some(files), raw_unsupported, ..Default::default() };
     let stats = export(cache, &mut manifest, None, &exporters, decoder, out_dir, &opts)?;
     Ok((manifest, stats))
+}
+
+/// Write a file's parts, decompressed and whole, one after another into `target`: one
+/// part to get it alone, or several to join them in the order given. A part the file
+/// doesn't have is left out. Returns each part written and its size.
+pub fn save_parts(
+    cache: &Cache,
+    package: &str,
+    path: &str,
+    parts: &[Part],
+    oodle: Option<Arc<Oodle>>,
+    target: &Path,
+) -> anyhow::Result<Vec<(Part, usize)>> {
+    let decoder = oodle.as_deref().map(|o| o as &dyn OodleDecoder);
+    let source = cache.package(package).with_context(|| format!("no package named {package}"))?;
+    let found: Vec<_> = parts.iter().filter_map(|&part| Some((part, source.part(part)?, source.part(part)?.find(path)?))).collect();
+    anyhow::ensure!(!found.is_empty(), "{path} has none of those parts");
+    let mut sizes = Vec::new();
+    write_atomic(target, |w| {
+        for (part, file, entry) in &found {
+            let (data, _) = file.read(entry, decoder).map_err(|e| std::io::Error::other(format!("{part}: {e}")))?;
+            w.write_all(&data)?;
+            sizes.push((*part, data.len()));
+        }
+        Ok(())
+    })?;
+    Ok(sizes)
 }
 
 #[cfg(test)]
