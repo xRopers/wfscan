@@ -95,7 +95,7 @@ fn handshake_and_tool_list() {
 
     let tools = c.request("tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["info", "find", "file", "read_bytes", "find_bytes", "export", "report"]);
+    assert_eq!(names, ["info", "find", "file", "read_bytes", "find_bytes", "export", "report", "survey"]);
     for tool in tools["result"]["tools"].as_array().unwrap() {
         assert_eq!(tool["inputSchema"]["type"], "object", "{tool}");
     }
@@ -185,6 +185,15 @@ fn export_writes_and_saves_the_manifest() {
     assert_eq!(ok["total"], stats["ok"]);
     let report = c.call_json("report", json!({}));
     assert!(report["types"].as_array().unwrap().iter().any(|t| t["kind"] == "audio" && t["ok"].as_u64() == stats["ok"].as_u64()), "{report}");
+
+    // A survey of the sounds' type: every one of them, the smallest listed.
+    let sounds = c.call_json("find", json!({ "type": 139, "limit": 1 }));
+    let survey = c.call_json("survey", json!({ "type": 139, "package": "Misc", "samples": 2 }));
+    assert_eq!((&survey["files"], &survey["unreadable"]), (&sounds["total"], &json!(0)), "{survey}");
+    assert_eq!(survey["samples"].as_array().unwrap().len(), 2);
+    assert!(survey["h"]["min"].as_u64().unwrap() > 0);
+    let (message, error) = c.call("survey", json!({}));
+    assert!(error && message.contains("`type` is required"), "{message}");
 }
 
 #[test]

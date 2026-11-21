@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use wfscan_core::export::check_manifest;
 use wfscan_core::{
     AudioOutput, Cache, Classifier, ExportOptions, Exporters, FileEntry, FormatOptions, IndexOptions, Kind, Manifest, Oodle, OodleDecoder,
-    Part, Status, TextureOutput, VideoOutput, export, index, package_info, report, with_input,
+    Part, Status, SurveyOptions, TextureOutput, VideoOutput, export, index, package_info, report, survey, with_input,
 };
 
 /// The protocol version this server speaks, and the older ones it also accepts.
@@ -178,6 +178,7 @@ impl Server {
             "find_bytes" => self.find_bytes(args)?,
             "export" => self.export(args)?,
             "report" => self.report(args)?,
+            "survey" => self.survey(args)?,
             _ => unreachable!("checked against tools()"),
         };
         Ok(serde_json::to_string_pretty(&value)?)
@@ -411,6 +412,25 @@ impl Server {
         report.errors.truncate(max_errors);
         Ok(serde_json::to_value(&report)?)
     }
+
+    fn survey(&mut self, args: &Value) -> Result<Value> {
+        let type_id = opt_u64(args, "type")?.ok_or_else(|| anyhow!("`type` is required"))?;
+        let opts = SurveyOptions {
+            type_id: u32::try_from(type_id).map_err(|_| anyhow!("`type` is too large"))?,
+            package: opt_str(args, "package")?.map(str::to_string),
+            path: opt_str(args, "prefix")?.map(str::to_string),
+            bytes: opt_u64(args, "bytes")?.unwrap_or(128).min(1024) as usize,
+            samples: opt_u64(args, "samples")?.unwrap_or(8).min(100) as usize,
+        };
+        self.open()?;
+        let decoder = self.oodle.as_ref().ok().map(|o| o as &dyn OodleDecoder);
+        let state = self.state.as_ref().expect("opened above");
+        let found = survey(&state.cache, &state.manifest, decoder, &opts);
+        if let (Err(load_error), true) = (&self.oodle, found.unreadable > 0) {
+            bail!("{} files couldn't be read: {load_error} (start the server with --oodle-dll PATH)", found.unreadable);
+        }
+        Ok(serde_json::to_value(&found)?)
+    }
 }
 
 /// The tools, with their input schemas.
@@ -494,6 +514,17 @@ fn tools() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {
                 "errors": { "type": "integer", "description": "How many kinds of failure to list (default 20)" },
                 "unknown": { "type": "boolean", "description": "Only types wfscan has no name for" },
+            } },
+        }),
+        json!({
+            "name": "survey",
+            "description": "A first look at every file of one type number, for working out its format: type header and B/F size ranges, the header bytes all files share (common, ?? where they differ), u32 header fields that give a part's size in at least half the files (size_fields: part = sum of multiple * u32 at offset + plus; negative offsets count from the header's end), attribute keys with counts, and the smallest files. A type number means different things in each package, so give `package`.",
+            "inputSchema": { "type": "object", "required": ["type"], "properties": {
+                "type": { "type": "integer", "description": "The type number" },
+                "package": { "type": "string", "description": "Only this package (recommended)" },
+                "prefix": { "type": "string", "description": "Only paths starting with this" },
+                "bytes": { "type": "integer", "description": "Leading (and trailing) type-header bytes to compare and search (default 128, at most 1024)" },
+                "samples": { "type": "integer", "description": "How many of the smallest files to list (default 8)" },
             } },
         }),
     ]

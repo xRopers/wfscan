@@ -112,6 +112,10 @@ pub struct ExportRecord {
     /// Files written, as internal-style paths under the output folder.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<String>,
+    /// Other files the exporter read, as `Package:/internal/path`. A skip based on an
+    /// older manifest (`--changed-since`) also needs each of these unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<String>,
 }
 
 impl FileEntry {
@@ -293,6 +297,7 @@ mod tests {
                         exporter: Some("model@1".into()),
                         reason: None,
                         outputs: vec!["/Lotus/A.gltf".into(), "/Lotus/A.bin".into()],
+                        uses: vec!["Texture:/Lotus/A.png".into()],
                     }),
                 },
                 FileEntry {

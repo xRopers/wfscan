@@ -11,7 +11,7 @@ use serde::Serialize;
 use wfscan_core::output::{internal_path_under, write_atomic};
 use wfscan_core::{
     AudioOutput, BinkLibrary, Cache, Classifier, ExportOptions, Exporters, FileEntry, FormatOptions, IndexOptions, Kind, Manifest, Oodle, OodleDecoder,
-    PackageInfo, Part, Status, TextureOutput, VideoOutput, VorbisTables, diff, export, index, package_info, report,
+    PackageInfo, Part, Status, SurveyOptions, TextureOutput, VideoOutput, VorbisTables, diff, export, index, package_info, report, survey,
 };
 
 #[derive(Parser)]
@@ -115,6 +115,31 @@ enum Command {
         #[arg(short = 'd', long = "dir", value_name = "DIR")]
         dir: PathBuf,
     },
+    /// A first look at every file of one type, for writing a reader: type header and part
+    /// sizes, the header bytes all files share, header fields that give a part's size,
+    /// attribute lines, and the smallest files
+    Survey {
+        /// The game's Cache.Windows folder
+        cache: PathBuf,
+        /// The type number
+        #[arg(long = "type", value_name = "N")]
+        type_id: u32,
+        /// Use this manifest if it matches the cache [default: index the cache first]
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+        /// Only this package
+        #[arg(long)]
+        package: Option<String>,
+        /// Only paths starting with this
+        #[arg(long)]
+        path: Option<String>,
+        /// How many leading type-header bytes to compare and search for size fields
+        #[arg(long, default_value_t = 256, value_name = "N")]
+        bytes: usize,
+        /// How many sample paths to list
+        #[arg(long, default_value_t = 8, value_name = "N")]
+        samples: usize,
+    },
     /// Export files to standard formats and record how each one ended in the manifest.
     /// Files whose earlier export still stands are skipped
     Export {
@@ -168,6 +193,10 @@ enum Command {
         /// (PATH.H, PATH.B, PATH.F). They stay `unsupported` in the manifest and report
         #[arg(long)]
         raw_unsupported: bool,
+        /// Afterwards, print the coverage report (as `wfscan report`) of the files this
+        /// run selected; with --dry-run, of what the run would have done
+        #[arg(long)]
+        report: bool,
     },
     /// What changed between two manifests, such as before and after a game update
     Diff {
@@ -240,7 +269,7 @@ fn run(cli: Cli) -> Result<()> {
             cmd_list(&manifest, &filter, cli.json)
         }
         Command::Raw { cache, path, package, dir } => cmd_raw(&open(&cache)?, &path, package.as_deref(), &dir, oodle, cli.json),
-        Command::Export { cache, manifest, dir, package, path, kinds, texture_format, audio_format, video_format, game_exe, changed_since, dry_run, force, raw_unsupported } => {
+        Command::Export { cache, manifest, dir, package, path, kinds, texture_format, audio_format, video_format, game_exe, changed_since, dry_run, force, raw_unsupported, report } => {
             let vorbis = game_exe.as_deref().map(vorbis_tables).transpose()?;
             let opts = ExportOptions { package, path, kinds, dry_run, force, raw_unsupported, files: None };
             let bink = match video_format {
@@ -248,9 +277,19 @@ fn run(cli: Cli) -> Result<()> {
                 VideoOutput::Bink => None,
             };
             let exporters = Exporters::builtin(&FormatOptions { texture: texture_format, audio: audio_format, vorbis, video: video_format, bink });
-            let job =
-                ExportJob { manifest_path: &manifest, changed_since: changed_since.as_deref(), out_dir: &dir, opts: &opts, exporters: &exporters };
+            let job = ExportJob {
+                manifest_path: &manifest,
+                changed_since: changed_since.as_deref(),
+                out_dir: &dir,
+                opts: &opts,
+                exporters: &exporters,
+                report,
+            };
             cmd_export(&open(&cache)?, &job, oodle, cli.json)
+        }
+        Command::Survey { cache, type_id, manifest, package, path, bytes, samples } => {
+            let opts = SurveyOptions { type_id, package, path, bytes, samples };
+            cmd_survey(&open(&cache)?, manifest.as_deref(), &opts, oodle, cli.json)
         }
         Command::Diff { old, new, list } => cmd_diff(&old, &new, list, cli.json),
         Command::Report { manifest, errors, unknown } => cmd_report(&manifest, errors, unknown, cli.json),
@@ -536,6 +575,8 @@ struct ExportOut {
     stats: wfscan_core::ExportStats,
     dry_run: bool,
     dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    report: Option<wfscan_core::Report>,
 }
 
 /// What `wfscan export` was asked to do.
@@ -545,10 +586,12 @@ struct ExportJob<'a> {
     out_dir: &'a Path,
     opts: &'a ExportOptions,
     exporters: &'a Exporters,
+    /// Print the coverage of the selected files afterwards.
+    report: bool,
 }
 
 fn cmd_export(cache: &Cache, job: &ExportJob, oodle: Result<Oodle, String>, json: bool) -> Result<()> {
-    let ExportJob { manifest_path, changed_since, out_dir, opts, exporters } = *job;
+    let ExportJob { manifest_path, changed_since, out_dir, opts, exporters, report: show_report } = *job;
     let mut manifest = Manifest::load(manifest_path)?;
     let previous = changed_since.map(Manifest::load).transpose()?;
     let decoder = oodle.as_ref().ok().map(|o| o as &dyn OodleDecoder);
@@ -562,8 +605,9 @@ fn cmd_export(cache: &Cache, job: &ExportJob, oodle: Result<Oodle, String>, json
     if !opts.dry_run {
         manifest.save(manifest_path)?;
     }
+    let coverage = show_report.then(|| report(&opts.selection(&manifest)));
     if json {
-        return print_json(&ExportOut { stats, dry_run: opts.dry_run, dir: out_dir.display().to_string() });
+        return print_json(&ExportOut { stats, dry_run: opts.dry_run, dir: out_dir.display().to_string(), report: coverage });
     }
     println!(
         "{} files selected: {} ok, {} failed, {} unsupported, {} skipped",
@@ -582,6 +626,70 @@ fn cmd_export(cache: &Cache, job: &ExportJob, oodle: Result<Oodle, String>, json
         println!("dry run: nothing written, manifest unchanged");
     } else {
         println!("updated {} (see `wfscan report`)", manifest_path.display());
+    }
+    if let Some(coverage) = &coverage {
+        println!();
+        print_report(coverage, 20);
+    }
+    Ok(())
+}
+
+fn cmd_survey(cache: &Cache, manifest: Option<&Path>, opts: &SurveyOptions, oodle: Result<Oodle, String>, json: bool) -> Result<()> {
+    let decoder = oodle.as_ref().ok().map(|o| o as &dyn OodleDecoder);
+    let manifest = match manifest.map(Manifest::load).transpose()? {
+        Some(m) if wfscan_core::export::check_manifest(cache, &m).is_ok() => m,
+        _ => index(cache, decoder, &IndexOptions::default())?.0,
+    };
+    let found = survey(cache, &manifest, decoder, opts);
+    if let Err(load_error) = &oodle
+        && found.unreadable > 0
+    {
+        bail!(oodle_hint(found.unreadable, load_error));
+    }
+    if json {
+        return print_json(&found);
+    }
+    let packages: Vec<String> = found.packages.iter().map(|(p, n)| format!("{p} {}", thousands(*n))).collect();
+    println!("type {}: {} files ({}), {} unreadable", found.type_id, thousands(found.files), packages.join(", "), thousands(found.unreadable));
+    if found.files == found.unreadable {
+        return Ok(());
+    }
+    if found.packages.len() > 1 && opts.package.is_none() {
+        println!("(a type number means different things in different packages: add --package to look at one)");
+    }
+    println!("{:13}  {:>9}  {:>11}  {:>11}  {:>11}", "part", "files", "min", "median", "max");
+    for (name, st) in [("type header", &found.h), ("B", &found.b), ("F", &found.f)] {
+        println!("{name:13}  {:>9}  {:>11}  {:>11}  {:>11}", thousands(st.files), thousands(st.min), thousands(st.median), thousands(st.max));
+    }
+    println!("type header bytes (?? differ, .. past the shortest):");
+    for (row, chunk) in found.common.chunks(16).enumerate() {
+        println!("  {:04x}  {}", row * 16, chunk.join(" "));
+    }
+    if found.size_fields.is_empty() {
+        println!("no u32 in the first or last {} bytes gives a part's size in half the files", opts.bytes);
+    } else {
+        println!("part sizes given by u32s of the type header, in at least half the files:");
+        for f in &found.size_fields {
+            let terms: Vec<String> = f
+                .terms
+                .iter()
+                .map(|t| {
+                    let at = if t.offset >= 0 { format!("0x{:x}", t.offset) } else { format!("end-0x{:x}", t.offset.unsigned_abs()) };
+                    format!("{} * u32@{at}", t.multiple)
+                })
+                .collect();
+            println!("  {} = {} {:+}  ({} of {} files)", f.part, terms.join(" + "), f.plus, thousands(f.files), thousands(found.files - found.unreadable));
+        }
+    }
+    if !found.attributes.is_empty() {
+        println!("attribute lines (files):");
+        for (key, n) in found.attributes.iter().take(20) {
+            println!("  {:>9}  {key}", thousands(*n));
+        }
+    }
+    println!("smallest files:");
+    for path in &found.samples {
+        println!("  {path}");
     }
     Ok(())
 }
@@ -672,6 +780,11 @@ fn cmd_report(manifest: &Path, max_errors: usize, unknown_only: bool, json: bool
     if json {
         return print_json(&report);
     }
+    print_report(&report, max_errors);
+    Ok(())
+}
+
+fn print_report(report: &wfscan_core::Report, max_errors: usize) {
     println!(
         "{:17}  {:>5}  {:12}  {:>9}  {:>13}  {:>7}  {:>9}  {:>7}  {:>9}  {:>9}  sample",
         "category", "type", "kind", "files", "size", "unread", "ok", "failed", "unsupp.", "skipped"
@@ -718,7 +831,6 @@ fn cmd_report(manifest: &Path, max_errors: usize, unknown_only: bool, json: bool
             );
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]

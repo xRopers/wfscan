@@ -84,10 +84,11 @@ wfscan index   <Cache.Windows> [-o manifest.json] [--hash] [--full-headers] [--n
 wfscan list    -m manifest.json [--package P] [--path PREFIX] [--type N] [--kind K] [--status S] [--failed] [--stale]
 wfscan export  <Cache.Windows> -m manifest.json -d out/ [--package P] [--path PREFIX] [--kinds K,K]
                [--texture-format dds|png] [--audio-format native|wav] [--changed-since old.json]
-               [--video-format bk2|png] [--raw-unsupported] [--dry-run] [--force]
+               [--video-format bk2|png] [--raw-unsupported] [--dry-run] [--force] [--report]
 wfscan raw     <Cache.Windows> --path FILE|FOLDER/ [--package P] -d out/
 wfscan diff    old.json new.json [--list]
 wfscan report  -m manifest.json [--errors N] [--unknown]
+wfscan survey  <Cache.Windows> --type N [--package P] [--path PREFIX]
 wfscan mcp     <Cache.Windows> [-m manifest.json]
 ```
 
@@ -95,8 +96,8 @@ Every command takes `--json`. `-j N` sets the number of threads. `--bink-dll PAT
 
 - **One bad file never stops a run.** Every file ends as `ok`, `failed`, `unsupported` or `skipped`, with a reason, recorded in the manifest. `report` groups the failures, so a format changed by a game update shows up as one line.
 - **Exports are incremental.** A file that was exported before, and whose output is still there, is skipped. After a game update, index again and pass the old manifest as `--changed-since` to export only what changed. `--force` exports everything again.
-- **`--dry-run`** runs the exporters and reports sizes without writing anything.
-- **`raw`** writes a file's decompressed parts untouched, for working out formats.
+- **`--dry-run`** runs the exporters and reports sizes without writing anything. Add **`--report`** to see the coverage table for what the run selected.
+- **`raw`** writes a file's decompressed parts untouched, for working out formats. **`survey`** looks at every file of one type at once: header and part sizes, the header bytes they all share, header fields that give a part's size, and the attribute lines they use.
 - **`--raw-unsupported`** also writes files wfscan can't convert yet, as their decompressed parts (`name.H`, `name.B`, `name.F`). They still count as unsupported.
 - **wfscan refuses to read a cache the game has open for writing** (`--allow-in-use` overrides). Close the game and its launcher first.
 

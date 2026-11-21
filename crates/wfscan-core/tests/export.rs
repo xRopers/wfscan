@@ -297,6 +297,77 @@ fn changed_since_exports_only_what_changed() {
     assert_eq!(export_after(&mut again, Some(&edited)).ok, 2);
 }
 
+/// A "model" exporter that also reads another file: `Test.lua`'s type header, through
+/// [`ExportInput::with_file`], and from inside that, the texture-less `Big.level`.
+struct Reader {
+    runs: AtomicU32,
+}
+
+impl Exporter for &'static Reader {
+    fn name(&self) -> &'static str {
+        "reader"
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    fn kind(&self) -> Kind {
+        Kind::Model
+    }
+
+    fn export(&self, input: &ExportInput) -> Result<Vec<Output>, ExportError> {
+        self.runs.fetch_add(1, Ordering::Relaxed);
+        let folder = input.path.rsplit_once('/').unwrap().0;
+        assert_eq!(input.resolve("Skin.mat"), format!("{folder}/Skin.mat"));
+        assert_eq!(input.resolve("/Lotus/Skin.mat"), "/Lotus/Skin.mat");
+        let missing = input.with_file("/Lotus/No/Such.mat", |_| ()).unwrap_err();
+        assert_eq!(missing, ExportError::failed("/Lotus/No/Such.mat is not in the cache"));
+        assert_eq!(input.find_file("/Lotus/Scripts/Test.lua"), Some("Misc"));
+        let (lua, level_type) = input.with_file("/Lotus/Scripts/Test.lua", |lua| {
+            assert_eq!((lua.package, lua.type_id()), ("Misc", 22));
+            let level = lua.with_file("/Lotus/Levels/Big.level", |level| level.type_id()).unwrap();
+            (lua.h_body().to_vec(), level)
+        })?;
+        assert_ne!(level_type, 0);
+        Ok(vec![Output { path: format!("{}.txt", input.path), data: lua }])
+    }
+}
+
+#[test]
+fn exporters_can_read_other_files_and_changes_to_them_count() {
+    let reader: &'static Reader = Box::leak(Box::new(Reader { runs: AtomicU32::new(0) }));
+    let exporters = Exporters::default().with(reader);
+    let mut before = setup(&fx::basic());
+    let out = before.out();
+    assert_eq!(before.export(&exporters, None, &ExportOptions::default()).ok, 1);
+    let skel = "/Lotus/Characters/Tenno/Excalibur/Excalibur_skel.fbx";
+    let record = before.record(skel);
+    assert_eq!(record.uses, ["Misc:/Lotus/Levels/Big.level", "Misc:/Lotus/Scripts/Test.lua"], "nested lookups count, sorted");
+    let written = std::fs::read(out.join("Lotus/Characters/Tenno/Excalibur/Excalibur_skel.fbx.txt")).unwrap();
+    assert_eq!(&written[..4], &[1, 2, 3, 4]);
+
+    // Exporting again over the same manifest skips: nothing has changed.
+    let stats = before.export(&exporters, None, &ExportOptions::default());
+    assert_eq!((stats.skipped, reader.runs.load(Ordering::Relaxed)), (1, 1));
+    assert_eq!(before.record(skel).uses.len(), 2, "a skip keeps the record's uses");
+
+    // The update changes Test.lua but not the skeleton itself: its export used Test.lua,
+    // so it is exported again instead of skipped.
+    let mut after = setup(&fx::basic_updated());
+    let stats = export(&after.cache, &mut after.manifest, Some(&before.manifest), &exporters, Some(&Flip), &out, &ExportOptions::default()).unwrap();
+    assert_eq!((stats.ok, stats.skipped), (2, 0));
+    let written = std::fs::read(out.join("Lotus/Characters/Tenno/Excalibur/Excalibur_skel.fbx.txt")).unwrap();
+    assert_eq!(written, [1, 2, 3, 4, 5], "the new Test.lua");
+
+    // With the uses dropped from the old record, the skeleton would have been skipped.
+    let mut forgetful = before.manifest.clone();
+    forgetful.files.iter_mut().filter_map(|f| f.export.as_mut()).for_each(|r| r.uses.clear());
+    let mut again = setup(&fx::basic_updated());
+    let stats = export(&again.cache, &mut again.manifest, Some(&forgetful), &exporters, Some(&Flip), &out, &ExportOptions::default()).unwrap();
+    assert_eq!((stats.ok, stats.skipped), (1, 1));
+}
+
 #[test]
 fn diff_finds_what_an_update_did() {
     let old = setup(&fx::basic()).manifest;

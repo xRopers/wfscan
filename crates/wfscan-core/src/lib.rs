@@ -4,6 +4,8 @@
 //! - [`cache`]: `.toc` and `.cache` files, block decompression, the common header.
 //! - [`index`]: walk a cache into a [`Manifest`].
 //! - [`manifest`]: the JSON record of every file.
+//! - [`export`] and [`formats`]: the export driver and the readers; [`report`] and
+//!   [`survey`]: coverage, and a first look at one type for format work.
 
 pub mod cache;
 pub mod diff;
@@ -14,6 +16,7 @@ pub mod index;
 pub mod manifest;
 pub mod output;
 pub mod report;
+pub mod survey;
 pub mod types;
 
 pub use cache::block::{BlockCounts, BlockError, OodleDecoder};
@@ -33,4 +36,5 @@ pub use manifest::{
     Classifier, ExportRecord, FileEntry, HeaderEntry, MANIFEST_VERSION, Manifest, PackageInfo, PartEntry, SourceInfo, Status,
 };
 pub use report::{ErrorRow, Report, TypeRow, report};
+pub use survey::{SizeField, SizeStats, Survey, SurveyOptions, Term, survey};
 pub use types::{Kind, kind_of};

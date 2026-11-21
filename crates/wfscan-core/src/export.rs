@@ -11,13 +11,15 @@
 //! - A file whose earlier export still stands is `skipped`: same contents, same exporter
 //!   version, outputs still on disk. "Earlier" is this manifest's own record, or the
 //!   record in the manifest given as `previous` (`--changed-since`) for files that
-//!   haven't changed between the two.
+//!   haven't changed between the two, nor have the other files that export read
+//!   ([`ExportInput::with_file`], recorded as the record's `uses`).
 //!
 //! The cache is only read. Outputs go to a temporary name and are renamed into place.
 
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
@@ -61,8 +63,8 @@ pub struct Output {
     pub data: Vec<u8>,
 }
 
-/// What an exporter gets to work with: one file's header and H data, and its B and F
-/// parts on request.
+/// What an exporter gets to work with: one file's header and H data, its B and F parts on
+/// request, and any other file of the cache through [`ExportInput::with_file`].
 pub struct ExportInput<'a> {
     pub game: Game,
     pub category: Category,
@@ -71,12 +73,51 @@ pub struct ExportInput<'a> {
     pub header: &'a CommonHeader,
     /// The whole H part, common header included.
     pub h: &'a [u8],
+    cache: &'a Cache,
     source: &'a Package,
     parts: [Option<&'a TocEntry>; 3],
     oodle: Option<&'a dyn OodleDecoder>,
+    /// Other files read through this input (and inputs it opened), `Package:/path`.
+    uses: &'a Mutex<Vec<String>>,
 }
 
 impl ExportInput<'_> {
+    /// `name` as a full internal path: names starting with `/` are already, anything else
+    /// is relative to this file's folder (how models name their materials).
+    pub fn resolve(&self, name: &str) -> String {
+        if name.starts_with('/') {
+            return name.to_string();
+        }
+        let folder = self.path.rsplit_once('/').map_or("", |(folder, _)| folder);
+        format!("{folder}/{name}")
+    }
+
+    /// The package holding a live file at `path`: this file's own package if it has one,
+    /// else the first by name.
+    pub fn find_file(&self, path: &str) -> Option<&str> {
+        let has = |p: &Package| p.part(Part::H).is_some_and(|h| h.find(path).is_some());
+        if has(self.source) {
+            return Some(self.source.name.as_str());
+        }
+        self.cache.packages.iter().find(|p| has(p)).map(|p| p.name.as_str())
+    }
+
+    /// Open another file of the cache (an internal path, see [`ExportInput::resolve`]) and
+    /// hand it to `use_it` as an input of its own. The file is recorded in the export's
+    /// `uses`, so a later `--changed-since` run exports this one again if it changes.
+    /// A file that isn't there, or has no common header, is a `Failed` error naming it.
+    pub fn with_file<T>(&self, path: &str, use_it: impl FnOnce(&ExportInput) -> T) -> Result<T, ExportError> {
+        let package = self.find_file(path).ok_or_else(|| ExportError::failed(format!("{path} is not in the cache")))?;
+        {
+            let mut uses = self.uses.lock().unwrap_or_else(|e| e.into_inner());
+            let tag = format!("{package}:{path}");
+            if !uses.contains(&tag) {
+                uses.push(tag);
+            }
+        }
+        open_input(self.cache, package, path, self.oodle, self.uses, use_it).map_err(|e| ExportError::failed(format!("{path}: {}", cause(&e))))
+    }
+
     pub fn type_id(&self) -> u32 {
         self.header.type_id
     }
@@ -168,6 +209,25 @@ pub struct ExportOptions {
     pub raw_unsupported: bool,
 }
 
+impl ExportOptions {
+    /// Whether these options pick `file`, entry `index` of the manifest, of kind `kind`.
+    pub fn selects(&self, index: usize, file: &FileEntry, kind: Option<Kind>) -> bool {
+        !file.stale
+            && self.package.as_ref().is_none_or(|p| *p == file.package)
+            && self.path.as_ref().is_none_or(|p| file.path.starts_with(p.as_str()))
+            && self.files.as_ref().is_none_or(|only| only.contains(&index))
+            && (self.kinds.is_empty() || kind.is_some_and(|k| self.kinds.contains(&k)))
+    }
+
+    /// `manifest` cut down to the files these options pick, as a run leaves it: for a
+    /// coverage report of that run alone (a dry run's included).
+    pub fn selection(&self, manifest: &Manifest) -> Manifest {
+        let classifier = manifest.classifier();
+        let files = manifest.files.iter().enumerate().filter(|&(i, f)| self.selects(i, f, classifier.kind(f))).map(|(_, f)| f.clone()).collect();
+        Manifest { version: manifest.version, tool: manifest.tool.clone(), source: manifest.source.clone(), packages: manifest.packages.clone(), files }
+    }
+}
+
 /// The name and version recorded for files written as raw parts.
 pub const RAW_EXPORTER: &str = "raw@1";
 
@@ -201,7 +261,7 @@ struct Run<'a> {
 }
 
 fn record(status: Status, exporter: Option<String>, reason: impl Into<String>) -> ExportRecord {
-    ExportRecord { status, exporter, reason: Some(reason.into()), outputs: Vec::new() }
+    ExportRecord { status, exporter, reason: Some(reason.into()), outputs: Vec::new(), uses: Vec::new() }
 }
 
 fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
@@ -277,7 +337,7 @@ impl Run<'_> {
             Err(e) => return failed(e),
         };
         let outputs = outputs.into_iter().map(|o| o.path).collect();
-        (ExportRecord { status: Status::Unsupported, exporter: tag, reason: Some(reason), outputs }, bytes)
+        (ExportRecord { status: Status::Unsupported, exporter: tag, reason: Some(reason), outputs, uses: Vec::new() }, bytes)
     }
 
     /// Export one file with the exporter for its kind.
@@ -299,7 +359,10 @@ impl Run<'_> {
             && earlier.exporter == tag
             && self.outputs_exist(&earlier.outputs)
         {
-            return (ExportRecord { status: Status::Skipped, exporter: tag, reason: None, outputs: earlier.outputs.clone() }, 0);
+            return (
+                ExportRecord { status: Status::Skipped, exporter: tag, reason: None, outputs: earlier.outputs.clone(), uses: earlier.uses.clone() },
+                0,
+            );
         }
 
         let failed = |reason: String| (record(Status::Failed, tag.clone(), reason), 0);
@@ -319,6 +382,7 @@ impl Run<'_> {
             Ok(header) => header,
             Err(e) => return failed(format!("H: common header: {e}")),
         };
+        let uses = Mutex::new(Vec::new());
         let input = ExportInput {
             game: self.cache.game,
             category,
@@ -326,9 +390,11 @@ impl Run<'_> {
             path: &file.path,
             header: &header,
             h: &h,
+            cache: self.cache,
             source: package,
             parts,
             oodle: self.oodle,
+            uses: &uses,
         };
         // Each output is written as soon as the exporter hands it over.
         let (mut paths, mut bytes) = (Vec::new(), 0u64);
@@ -337,9 +403,12 @@ impl Run<'_> {
             paths.push(output.path);
             Ok(())
         };
-        match catch_unwind(AssertUnwindSafe(|| exporter.export_each(&input, &mut emit))) {
+        let result = catch_unwind(AssertUnwindSafe(|| exporter.export_each(&input, &mut emit)));
+        let mut uses = uses.into_inner().unwrap_or_else(|e| e.into_inner());
+        uses.sort();
+        match result {
             Ok(Ok(())) if paths.is_empty() => failed("the exporter produced no files".into()),
-            Ok(Ok(())) => (ExportRecord { status: Status::Ok, exporter: tag, reason: None, outputs: paths }, bytes),
+            Ok(Ok(())) => (ExportRecord { status: Status::Ok, exporter: tag, reason: None, outputs: paths, uses }, bytes),
             Ok(Err(ExportError::Unsupported(reason))) => (record(Status::Unsupported, tag, reason), 0),
             Ok(Err(ExportError::Failed(reason))) => failed(reason),
             Err(panic) => failed(panic_message(panic)),
@@ -356,6 +425,17 @@ pub fn with_input<T>(
     oodle: Option<&dyn OodleDecoder>,
     use_it: impl FnOnce(&ExportInput) -> T,
 ) -> Result<T> {
+    open_input(cache, package, path, oodle, &Mutex::new(Vec::new()), use_it)
+}
+
+fn open_input<T>(
+    cache: &Cache,
+    package: &str,
+    path: &str,
+    oodle: Option<&dyn OodleDecoder>,
+    uses: &Mutex<Vec<String>>,
+    use_it: impl FnOnce(&ExportInput) -> T,
+) -> Result<T> {
     let source = cache.package(package).ok_or_else(|| Error::NotFound(format!("no package named {package}")))?;
     let mut parts = [None; 3];
     for part in Part::ALL {
@@ -364,7 +444,7 @@ pub fn with_input<T>(
     let h_entry = parts[Part::H as usize].ok_or_else(|| Error::NotFound(format!("{package} has no file at {path}")))?;
     let (h, _) = source.part(Part::H).expect("a found entry's part exists").read(h_entry, oodle)?;
     let header = header::parse(&h).map_err(|e| Error::NotFound(format!("{path} has no common header ({e})")))?;
-    let input = ExportInput { game: cache.game, category: source.category, package, path, header: &header, h: &h, source, parts, oodle };
+    let input = ExportInput { game: cache.game, category: source.category, package, path, header: &header, h: &h, cache, source, parts, oodle, uses };
     Ok(use_it(&input))
 }
 
@@ -407,31 +487,42 @@ pub fn export(
     let before: HashMap<(&str, &str), &FileEntry> = previous
         .map(|p| p.files.iter().filter(|f| !f.stale).map(|f| ((f.package.as_str(), f.path.as_str()), f)).collect())
         .unwrap_or_default();
+    // This manifest by package and path, only needed to check an older record's `uses`.
+    let now: HashMap<(&str, &str), &FileEntry> = if previous.is_some() {
+        manifest.files.iter().filter(|f| !f.stale).map(|f| ((f.package.as_str(), f.path.as_str()), f)).collect()
+    } else {
+        HashMap::new()
+    };
     let selected: Vec<(usize, Option<Kind>)> = manifest
         .files
         .iter()
         .enumerate()
-        .filter(|(_, f)| !f.stale)
-        .filter(|(_, f)| opts.package.as_ref().is_none_or(|p| *p == f.package))
-        .filter(|(_, f)| opts.path.as_ref().is_none_or(|p| f.path.starts_with(p.as_str())))
-        .filter(|(i, _)| opts.files.as_ref().is_none_or(|only| only.contains(i)))
         .map(|(i, f)| (i, classifier.kind(f)))
-        .filter(|(_, kind)| opts.kinds.is_empty() || kind.is_some_and(|k| opts.kinds.contains(&k)))
+        .filter(|&(i, kind)| opts.selects(i, &manifest.files[i], kind))
         .collect();
 
     let results: Vec<(usize, ExportRecord, u64)> = selected
         .par_iter()
         .map(|&(i, kind)| {
             let file = &manifest.files[i];
+            // This manifest's own record, else the older manifest's if the file and every
+            // file its export read are unchanged between the two.
             let earlier = file.export.as_ref().or_else(|| {
                 let old = before.get(&(file.package.as_str(), file.path.as_str()))?;
-                old.same_content(file).then_some(old.export.as_ref()?)
+                let record = old.export.as_ref()?;
+                let unchanged = |package: &str, path: &str| {
+                    let (Some(then), Some(now)) = (before.get(&(package, path)), now.get(&(package, path))) else { return false };
+                    then.same_content(now)
+                };
+                let uses_unchanged = record.uses.iter().all(|u| u.split_once(':').is_some_and(|(package, path)| unchanged(package, path)));
+                (old.same_content(file) && uses_unchanged).then_some(record)
             });
             let (record, bytes) = run.export_one(file, classifier.category(file), kind, earlier);
             (i, record, bytes)
         })
         .collect();
     drop(classifier);
+    drop(now);
 
     let mut stats = ExportStats { selected: results.len() as u64, ..Default::default() };
     for (i, record, bytes) in results {

@@ -171,6 +171,18 @@ fn indexed(fixture: &Fixture, name: &str) -> (tempfile::TempDir, String, String)
 }
 
 #[test]
+fn survey_looks_at_one_type() {
+    let (_tmp, cache) = write(&fx::basic().without_oodle());
+    let found = ok_json(&["survey", &cache, "--type", "269", "--package", "Misc", "--json"]);
+    assert_eq!((&found["type_id"], &found["files"], &found["unreadable"]), (&Value::from(269), &Value::from(1), &Value::from(0)), "{found}");
+    assert_eq!(found["samples"][0], "/Lotus/Characters/Tenno/Excalibur/Excalibur_skel.fbx");
+    let text = String::from_utf8(ok(&["survey", &cache, "--type", "269"]).stdout).unwrap();
+    assert!(text.contains("type 269: 1 files (Misc 1)") && text.contains("smallest files:"), "{text}");
+    let none = String::from_utf8(ok(&["survey", &cache, "--type", "9999"]).stdout).unwrap();
+    assert!(none.contains("type 9999: 0 files"), "{none}");
+}
+
+#[test]
 fn export_records_a_status_for_every_file() {
     let (tmp, cache, manifest) = indexed(&fx::basic().without_oodle(), "m.json");
     let out = tmp.path().join("out");
@@ -179,6 +191,16 @@ fn export_records_a_status_for_every_file() {
     let before = std::fs::read(&manifest).unwrap();
     let dry = ok_json(&["export", &cache, "-m", &manifest, "-d", s(&out), "--dry-run", "--json"]);
     assert_eq!((&dry["dry_run"], &dry["stats"]["selected"]), (&Value::from(true), &Value::from(7)));
+    assert_eq!(std::fs::read(&manifest).unwrap(), before);
+    assert!(dry.get("report").is_none());
+
+    // --report: the coverage of what the run selected, dry runs included.
+    let dry = ok_json(&["export", &cache, "-m", &manifest, "-d", s(&out), "--dry-run", "--report", "--path", "/Lotus/Interface/", "--json"]);
+    let types = dry["report"]["types"].as_array().unwrap();
+    let sum = |key: &str| types.iter().map(|t| t[key].as_u64().unwrap()).sum::<u64>();
+    assert_eq!((sum("files"), sum("ok")), (1, 1), "{types:?}");
+    let text = String::from_utf8(ok(&["export", &cache, "-m", &manifest, "-d", s(&out), "--dry-run", "--report"]).stdout).unwrap();
+    assert!(text.contains("category") && text.contains("files of known kinds"), "{text}");
     assert_eq!(std::fs::read(&manifest).unwrap(), before);
 
     assert!(!out.exists());

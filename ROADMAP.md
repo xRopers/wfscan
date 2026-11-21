@@ -2,18 +2,19 @@
 
 Counts are from the real cache in November 2026 (447,249 files). A dry run of `wfscan export` over everything gave 268,371 ok, 55 failed and **178,823 unsupported** before phase 1, and 317,686 ok, 55 failed and 129,515 unsupported after it. Until a type gets a reader, `--raw-unsupported` writes its decompressed parts as they are.
 
-Each phase is ordered by how much it covers for the work it takes. Phase 0 unblocks the later ones. Phases 1 and 2 are mostly small. Phases 3 to 6 each need real reverse engineering, done from real files as the clean-room rule in CLAUDE.md requires.
+Each phase is ordered by how much it covers for the work it takes. Phase 0 (done) unblocks the later ones; a full dry run is still 323,235 ok, 49 failed, 123,972 unsupported, and `wfscan export --dry-run --report` gives the current numbers at any time. Phases 1 and 2 are mostly small. Phases 3 to 6 each need real reverse engineering, done from real files as the clean-room rule in CLAUDE.md requires.
 
 What "checked" means below: a sample file was looked at with `wfscan mcp` (`file`, `read_bytes`) while writing this. Everything else is a guess from the file names and the original exporter's issue tracker, to confirm before building on it.
 
-## Phase 0: groundwork
+## Phase 0: groundwork — done (November 2026), except streaming a single large output
 
-Nothing here exports a new type. It is what phases 3 to 6 need, and it is cheap to do first.
+Nothing here exports a new type. It is what phases 3 to 6 need.
 
-- **Exporters that read other files.** Materials name textures, models name materials, animations need a skeleton, levels place models. Add a lookup to `ExportInput` (by internal path, any package) so an exporter can read another file's parts. Noted as missing since stage 2.
-- **Streamed outputs.** Levels can be larger than memory (original issue 15). Let an `Output` be written in pieces instead of one buffer.
-- **Coverage from a dry run.** `wfscan export --dry-run` doesn't save the manifest, so `report` can't show its statuses. Add `--report` to `export`, or let a dry run write to a separate manifest, so every phase can measure what it gained.
-- **A survey tool per type.** Each reader so far started with a throwaway program run over every file of the type. Keep one in `tools/` that, for a type number, prints header lengths, part sizes, and the bytes common to all files. That's where each phase below starts.
+- **Exporters that read other files — done.** `ExportInput::with_file(path, |other| ...)` opens any file of the cache (this file's package first, then the others by name) and hands it over as an `ExportInput` of its own, which can open further files. `resolve(name)` turns a relative name into a full path next to the file (how models name materials); `find_file(path)` says which package has it. Every file opened is recorded in the export record's new `uses` list (`Package:/path`, nested lookups included), and a skip based on `--changed-since` now also needs each of those unchanged, so a model is exported again when only its material or texture changed. Test: `tests/export.rs` `exporters_can_read_other_files_and_changes_to_them_count`.
+- **Streamed outputs — partly done.** `Exporter::export_each` (added for video frames) hands outputs to the driver one at a time and each is written as it arrives, so an export of many files never holds them all. A *single* output is still one buffer. That is enough until phase 6: if one level's `.glb` turns out larger than memory (original issue 15), `Output` needs a writer instead of `data`.
+- **Coverage from a dry run — done.** `wfscan export ... --report` prints the coverage report (as `wfscan report`) of the files the run selected, dry runs included; `--json` puts it under `report`. A full dry run with the report takes 52 s on the real cache.
+- **A survey tool per type — done**, as a command rather than a program in `tools/`, so the MCP server has it too: `wfscan survey <cache> --type N [--package P] [--path PREFIX] [--bytes N] [--samples N]`, MCP tool `survey`. For one type it gives the type header, B and F size ranges, the header bytes every file shares, u32 header fields (from the start, or from the end for headers that start with strings) that give a part's size alone or two together in at least half the files, the attribute keys with counts, and the smallest files. Reads only H parts: 2 to 5 s per type on the real cache.
+  - First results: material type 210 keeps its texture slots and parameters in the attribute text (`TX:NormalMap` in 18,115 files, `TX:DiffuseMap` 15,859, `PS:TintColor0` 10,908, `TX:PackMap` 8,853...), which gives phase 3 a head start. On model types 102, 105, 166 and 281 no header field gives B's size even for half the files: B also holds PhysX data of its own length, and the counts sit in the mesh list past variable-length strings. So the size search helps with simple layouts only.
 
 ## Phase 1: data that is already a standard format, or plain text — done (November 2026)
 
@@ -64,7 +65,7 @@ Still to do:
 | Terrain with extra edge data | 5 | Four terrains of `QuestsGaraSayaStart` and one of the Photobooth's Onkos Cave have 2 to 4 x 1,548 bytes more (1,548 = 12 x 129, the grid's edge). Left failing until it's understood |
 | Rigged model failures | 44 | B has a few hundred to 15,000 bytes left over that follow neither the vertex nor the bone counts, or the indices run past B (cloth, snakes, plumes: likely extra per-mesh or morph data). Neither attribute line explains them |
 | Collision-only models | 2,323 | Nothing to draw today. Could go out as a `.glb` of the collision hulls, as an option; needs PhysX's cooked mesh format |
-| Vertex colours (`.vc`, Misc 118) | 3,284 | Original issue 10. Per-vertex data for a model, so it needs phase 0's file lookup to find the model it belongs to |
+| Vertex colours (`.vc`, Misc 118) | 3,284 | Original issue 10. Per-vertex data for a model; phase 0's `with_file` can now fetch the model it belongs to |
 
 Moved to phase 3: `_hlod.hlm` (Misc 218, 1,229, and one in 216) are HLOD **materials** (shader sources, then `_hd.png` / `.hlpm` texture names, all in H), not meshes; Misc 212 (35, `BuildDepthMipsMaterial` and the like) look like materials too.
 
@@ -79,7 +80,7 @@ Gained so far: **5,549 files** (976 textures, 4,573 models). A full dry run: 323
 | 212 (Misc) | 35 | Material-like (`BuildDepthMipsMaterial`); moved from phase 2 |
 | 208, 209, 206 (Misc) | 101 | Rarer material types |
 
-- **Reader:** material parameters and texture slots out of the H body. Checked on `ExcaliburBody`: the attribute text is empty, the source paths list its shaders, and about 1,270 bytes follow the 1,180-byte header. The parameters are there.
+- **Reader:** material parameters and texture slots. Most materials keep them in the attribute text: `wfscan survey --type 210 --package Misc` counts `TX:NormalMap` in 18,115 of the 38,728, `TX:DiffuseMap` in 15,859, `TX:PackMap` in 8,853, tint and emissive parameters (`PS:...`) and shader switches (`DETAILING`, `ROUGHNESS_MAP`...) in thousands. Others, such as `ExcaliburBody`, have empty attribute text: their shaders are in the source paths and about 1,270 bytes follow the 1,180-byte header, so the values are in the H body there. Start with the attribute text, then the body.
 - **Output:** a `.json` per material (shader, parameters, texture paths).
 - **Then link textures into models:** each `.glb` material gets its base colour, normal and packmap textures, using phase 0's file lookup. Models currently carry material names only.
 
@@ -145,6 +146,7 @@ Small types with little to view: fonts and font caches (Font 36, Misc 34, 273, 2
 
 | Phase | Files it would cover (approx.) | Cumulative share of today's unsupported |
 |---|---:|---:|
+| 0. Groundwork (done) | none: lookup, `--report`, `survey` | |
 | 1. Passthrough and text (done) | 49,315 | 28% |
 | 2. Gaps in textures and models (5,549 done) | 12,500 | 36% |
 | 3. Materials | 38,800 | 58% |
